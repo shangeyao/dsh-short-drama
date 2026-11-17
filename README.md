@@ -43,7 +43,7 @@ dsh plugin add github:shangeyao/dsh-short-drama
 |---|---|
 | `storyboard_write` | 按分镜规则把剧本转成分镜词，写入工作区的 Markdown 文件（默认 `storyboard.md`） |
 | `short_drama_assets` | 列出工作区里可用的人像图 / 音色 / 参考视频，可按类型过滤 |
-| `video_submit` | 用小云雀或 Dreamina 的 CLI 提交视频任务，立即返回任务 id；后台继续跑 |
+| `video_submit` | 用小云雀（Pippit）或即梦（dreamina）的**官方 CLI 真实语法**提交视频任务，自动轮询并将成片下载到工作区；立即返回任务 id |
 | `video_status` | 查一个任务或列出最近任务 |
 | `video_download` | 把已完成的视频复制到工作区内指定目录 |
 | `video_cancel` | 取消排队中或运行中的任务 |
@@ -75,13 +75,60 @@ dsh plugin add github:shangeyao/dsh-short-drama
 | `geminiProvider` / `geminiModel` | 供应商与模型名 | `google` / `gemini-2.5-pro` |
 | `geminiApiKeyEnv` | Key 的环境变量 / 凭据名 | `GEMINI_API_KEY` |
 | `geminiBaseURL` | Gemini API 基址 | `https://generativelanguage.googleapis.com/v1beta` |
-| `xiaoyunqueCommand` / `dreaminaCommand` | 两个 CLI 命令名或绝对路径 | `xiaoyunque` / `dreamina` |
+| `xiaoyunqueCommand` | 小云雀 Pippit CLI 命令 | `pippit-tool-cli` |
+| `dreaminaCommand` | 即梦官方 CLI 命令 | `dreamina` |
+| `xiaoyunqueModel` | 小云雀模型 key（`model list` 查） | 空（提示先查） |
+| `dreaminaModelVersion` | 即梦 `model_version` | `seedance2.0mini` |
+| `xiaoyunqueResolution` / `dreaminaResolution` | 分辨率 | `720p` / `720p` |
 | `defaultRatio` / `defaultDuration` | 提交默认比例与时长 | `9:16` / `5` |
 | `downloadFolder` | 默认输出目录 | `generated-videos` |
 | `assetExtensions` | 素材扫描扩展名 | 图片 / 视频 / 音频常见格式 |
 | `storyboardPreset` | 分镜规则（即系统提示词） | 内置中文分镜规范 |
 
 配置改完点「保存配置」，会写回 profile；**重启插件后生效**。
+
+---
+
+## 出片 CLI 的安装与真实用法
+
+插件直接调用两家**官方 CLI**，参数按各自真实语法生成，不是臆测的 `generate --output`：
+
+### 小云雀（Pippit，`pippit-tool-cli`）
+
+```bash
+npm install -g @pippit-dev/cli      # 提供二进制 pippit-tool-cli
+pippit-tool-cli login               # 浏览器授权；CI 可改用环境变量 XYQ_ACCESS_KEY
+pippit-tool-cli model list          # 查 --model 要用的模型 key
+```
+
+提交与下载（插件内部自动执行）：
+
+```bash
+pippit-tool-cli generate-video --prompt "..." --model Seedance_2.0_mini_lite \
+  --ratio 9:16 --duration 5 --resolution 720p [--image 人像.png] [--audio 配音.mp3]
+# -> JSON { thread_id, run_id }
+pippit-tool-cli query-result --thread-id T --run-id R --download-dir out/
+```
+
+### 即梦（dreamina）
+
+```bash
+curl -fsSL https://jimeng.jianying.com/cli | bash   # 安装 dreamina
+export PATH="$HOME/.local/bin:$PATH"
+dreamina login --headless                            # OAuth 设备码登录
+dreamina user_credit                                 # 查登录态与会员等级
+```
+
+提交与查询（插件内部自动执行）：
+
+```bash
+dreamina text2video --prompt "..." --model_version seedance2.0mini \
+  --ratio 9:16 --video_resolution 720p --duration 5 --poll=0
+# -> JSON { submit_id }
+dreamina query_result --submit_id=ID --download_dir=out/
+```
+
+> 注意：即梦官方 CLI 出片**仅限高级会员**；普通网页登录能生成不等于有 CLI 权限。模型 `model_version` 由 `dreamina text2video -h` 里的 `model_version:` 行列出。
 
 任务历史落在 `<DSH home>/short-drama/history.json`，重启后仍在；重启时仍在「生成中」的任务会被标记为失败（进程已不存在），不会无限轮询。
 

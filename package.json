@@ -1,6 +1,6 @@
 {
   "name": "dsh-short-drama",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "DeepSeek Harness 侧边栏短剧工坊：用 Gemini 按可自定义规则生成分镜词，再通过小云雀 / Dreamina CLI 生成视频。",
   "type": "module",
   "license": "MIT",

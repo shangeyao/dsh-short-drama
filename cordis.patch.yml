@@ -8,12 +8,23 @@
         geminiModel: gemini-2.5-pro
         geminiApiKeyEnv: GEMINI_API_KEY
         geminiBaseURL: https://generativelanguage.googleapis.com/v1beta
-        # 两个出片 CLI。命令名或绝对路径，面板不会猜测参数格式。
-        xiaoyunqueCommand: xiaoyunque
+        # 两个官方出片 CLI（命令名或绝对路径）。
+        # 小云雀 = Pippit CLI：npm i -g @pippit-dev/cli，二进制名 pippit-tool-cli；
+        # 首次用 pippit-tool-cli login 登录，或设环境变量 XYQ_ACCESS_KEY。
+        # 即梦 = 官方 dreamina CLI：curl -fsSL https://jimeng.jianying.com/cli | bash；
+        # 首次用 dreamina login --headless 登录（仅高级会员可出片）。
+        xiaoyunqueCommand: pippit-tool-cli
         dreaminaCommand: dreamina
         # 提交视频时的默认值，可在面板里逐单覆盖。
         defaultRatio: '9:16'
         defaultDuration: 5
+        # 出片模型。留空时小云雀会提示先跑 model list 取 key；
+        # 即梦默认 seedance2.0mini（可用：seedance2.0 / 2.0fast / 2.0mini / 2.5 等）。
+        xiaoyunqueModel: ''
+        dreaminaModelVersion: seedance2.0mini
+        # 分辨率：两者都支持 720p；即梦 seedance2.0_vip 才支持 1080p/4k。
+        xiaoyunqueResolution: '720p'
+        dreaminaResolution: '720p'
         # 相对路径落在工作区内；绝对路径直接使用。
         downloadFolder: generated-videos
         assetExtensions:

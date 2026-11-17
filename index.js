@@ -22,7 +22,7 @@ import { copyFile, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/pro
 import { homedir } from 'node:os'
 import path from 'node:path'
 
-const VERSION = '1.1.0'
+const VERSION = '1.2.0'
 
 /** Prefix route owned by the configuration panel. */
 const ROUTE_PREFIX = '/short-drama/api'
@@ -32,10 +32,17 @@ const DEFAULTS = {
   geminiModel: 'gemini-2.5-pro',
   geminiApiKeyEnv: 'GEMINI_API_KEY',
   geminiBaseURL: 'https://generativelanguage.googleapis.com/v1beta',
-  xiaoyunqueCommand: 'xiaoyunque',
+  // 真实二进制：小云雀是 Pippit 官方 CLI `pippit-tool-cli`（npm @pippit-dev/cli），
+  // 即梦是官方 `dreamina` CLI（curl https://jimeng.jianying.com/cli | bash）。
+  xiaoyunqueCommand: 'pippit-tool-cli',
   dreaminaCommand: 'dreamina',
   defaultRatio: '9:16',
   defaultDuration: 5,
+  // 出片模型由 model list 发现，默认不猜；留空则调用 CLI 的 model list 取第一个。
+  xiaoyunqueModel: '',
+  dreaminaModelVersion: 'seedance2.0mini',
+  xiaoyunqueResolution: '720p',
+  dreaminaResolution: '720p',
   downloadFolder: 'generated-videos',
   storyboardPreset: [
     '你是一位资深短剧分镜师。请把用户提供的剧本转换为可直接用于 AI 视频生成的分镜词列表。',
@@ -57,6 +64,10 @@ const CONFIG_KEYS = [
   'dreaminaCommand',
   'defaultRatio',
   'defaultDuration',
+  'xiaoyunqueModel',
+  'dreaminaModelVersion',
+  'xiaoyunqueResolution',
+  'dreaminaResolution',
   'downloadFolder',
   'storyboardPreset',
   'assetExtensions',
@@ -318,6 +329,10 @@ export function apply(ctx, config = {}) {
     dreaminaCommand: String(config.dreaminaCommand || DEFAULTS.dreaminaCommand),
     defaultRatio: String(config.defaultRatio || DEFAULTS.defaultRatio),
     defaultDuration: asInt(config.defaultDuration, DEFAULTS.defaultDuration, 1, 60),
+    xiaoyunqueModel: String(config.xiaoyunqueModel || DEFAULTS.xiaoyunqueModel),
+    dreaminaModelVersion: String(config.dreaminaModelVersion || DEFAULTS.dreaminaModelVersion),
+    xiaoyunqueResolution: String(config.xiaoyunqueResolution || DEFAULTS.xiaoyunqueResolution),
+    dreaminaResolution: String(config.dreaminaResolution || DEFAULTS.dreaminaResolution),
     downloadFolder: String(config.downloadFolder || DEFAULTS.downloadFolder),
     storyboardPreset: String(config.storyboardPreset || DEFAULTS.storyboardPreset),
     assetExtensions: asList(config.assetExtensions, ['.png', '.jpg', '.jpeg', '.webp', '.mp4', '.mov', '.mp3', '.wav']),
@@ -395,49 +410,277 @@ export function apply(ctx, config = {}) {
 
   /* ---------------------------------------------------------------- video */
 
+  /**
+   * CLIs print log lines and then one JSON object on stdout. Parse the LAST
+   * JSON object/line, which is the machine-readable result (both official CLIs
+   * do this). Returns null when stdout contains no JSON.
+   */
+  function parseCliJson(text) {
+    if (typeof text !== 'string' || !text.trim()) return null
+    const trimmed = text.trim()
+    try {
+      return JSON.parse(trimmed)
+    } catch {
+      /* fall through: logs are mixed with the JSON line */
+    }
+    // Prefer the last line that starts with { — that is the result object.
+    const lines = trimmed.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean)
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      const line = lines[index]
+      if (!line.startsWith('{')) continue
+      try {
+        return JSON.parse(line)
+      } catch {
+        /* keep scanning backwards */
+      }
+    }
+    // Last resort: the largest {...} block in the whole output.
+    const first = trimmed.indexOf('{')
+    const last = trimmed.lastIndexOf('}')
+    if (first !== -1 && last > first) {
+      try {
+        return JSON.parse(trimmed.slice(first, last + 1))
+      } catch {
+        /* no JSON at all */
+      }
+    }
+    return null
+  }
+
+  /** Classify a CLI failure from its combined output using the documented strings. */
+  function classifyCliFailure(text) {
+    const clean = String(text || '').replace(/[\u0000-\u001f\u007f]/gu, ' ').trim()
+    if (/没有\s*dreamina_cli\s*使用权限|仅限高级|plan_generation_unsupported/iu.test(clean)) {
+      return '即梦账号未开通 CLI 生成权限：官方 CLI 仅限高级会员（普通网页登录不等于 CLI 权限）。'
+    }
+    if (/未检测到有效登录态|请先执行\s*dreamina\s*login|请先登录|unauthori[sz]ed|not logged in|未登录/iu.test(clean)) {
+      return 'CLI 未登录：请先在运行宿主的环境里执行一次登录（dreamina login --headless 或 pippit-tool-cli login）。'
+    }
+    if (/AigcComplianceConfirmationRequired|合规/iu.test(clean)) {
+      return '内容合规确认未完成：需要到对应网页端完成一次授权后再重试。'
+    }
+    return clean.slice(-600) || 'CLI 执行失败'
+  }
+
+  /** Collect a CLI run's stdout/stderr into a bounded tail on the task record. */
+  async function cliRun(item, command, args, controller, stage) {
+    store.update(item.id, { status: 'running', command, args, stage })
+    let tail = ''
+    const outcome = await runCli({
+      command,
+      args,
+      cwd: item.cwd,
+      signal: controller.signal,
+      onLine: (chunk, stream) => {
+        tail = (tail + chunk).slice(-8000)
+        store.update(item.id, { stage: stream === 'stderr' ? 'CLI 输出…' : stage, tail })
+      },
+    })
+    return { outcome, tail }
+  }
+
+  /**
+   * Dreamina (即梦) real flow:
+   *   submit:  dreamina text2video --prompt X --model_version M --ratio R
+   *              --video_resolution RES --duration N --poll=0   (or image2video with --image)
+   *   poll:    dreamina query_result --submit_id=ID
+   *   download: dreamina query_result --submit_id=ID --download_dir=DIR  (or URL download)
+   */
+  async function runDreamina(item, controller, deadline) {
+    const command = settings.dreaminaCommand
+    const modelVersion = String(item.model || settings.dreaminaModelVersion || '').trim()
+    const ratio = item.ratio
+    const resolution = settings.dreaminaResolution || '720p'
+
+    let submitArgs = [
+      'text2video',
+      '--prompt', item.prompt,
+      '--model_version', modelVersion,
+      '--ratio', ratio,
+      '--video_resolution', resolution,
+      '--duration', String(item.seconds),
+      '--poll=0',
+    ]
+    // An image reference switches to image2video, which uses --image (singular)
+    // and has no --ratio flag.
+    if (item.assets.length > 0) {
+      submitArgs = [
+        'image2video',
+        '--image', item.assets[0],
+        '--prompt', item.prompt,
+        '--video_resolution', resolution,
+        '--duration', String(item.seconds),
+        '--model_version', modelVersion,
+        '--poll=0',
+      ]
+    }
+
+    store.update(item.id, { stage: '提交生成任务…' })
+    const { outcome, tail } = await cliRun(item, command, submitArgs, controller, '生成中…')
+    if (Date.now() > deadline) throw new Error('任务超时')
+    if (controller.signal.aborted) return
+    if (outcome.code !== 0) {
+      store.update(item.id, { status: 'failed', stage: '', error: classifyCliFailure(tail) })
+      return
+    }
+
+    const submitted = parseCliJson(tail)
+    const submitId = submitted?.submit_id || submitted?.data?.submit_id
+    if (!submitId) {
+      store.update(item.id, {
+        status: 'failed', stage: '',
+        error: `提交成功但未找到 submit_id：${tail.trim().slice(-400) || 'CLI 无输出'}`,
+      })
+      return
+    }
+    store.update(item.id, { submitId, stage: '任务已提交，等待成片…' })
+
+    // Poll query_result until success/fail.
+    const pollIntervalMs = 3000
+    while (!controller.signal.aborted && Date.now() <= deadline) {
+      await new Promise((resolve) => setTimeout(resolve, pollIntervalMs))
+      const pollArgs = ['query_result', `--submit_id=${submitId}`, `--download_dir=${item.outDir}`]
+      const polled = await cliRun(item, command, pollArgs, controller, '查询结果…')
+      if (controller.signal.aborted) return
+      if (polled.outcome.code !== 0) {
+        store.update(item.id, { status: 'failed', stage: '', error: classifyCliFailure(polled.tail) })
+        return
+      }
+      const result = parseCliJson(polled.tail)
+      const genStatus = result?.gen_status || result?.data?.gen_status
+      if (genStatus === 'success' || genStatus === 'succeed' || genStatus === 'completed') {
+        const produced = await newestVideo(item.outDir) || await newestMediaUrl(result, item.outDir, item.id)
+        store.update(item.id, {
+          status: produced ? 'succeeded' : 'completed',
+          stage: '', resultFile: produced || '',
+          resultName: produced ? path.basename(produced) : '',
+          error: produced ? '' : '生成成功，但未能定位输出文件（可查看 tail 中的下载地址）',
+        })
+        return
+      }
+      if (genStatus === 'fail' || genStatus === 'failed') {
+        store.update(item.id, {
+          status: 'failed', stage: '',
+          error: String(result?.fail_reason || result?.data?.fail_reason || '生成失败').slice(-600),
+        })
+        return
+      }
+      store.update(item.id, { stage: `生成中…（${genStatus || 'querying'}）` })
+    }
+    if (controller.signal.aborted) return
+    store.update(item.id, { status: 'failed', stage: '', error: '查询超时，任务仍可能在服务端生成中' })
+  }
+
+  /**
+   * XiaoYunque / Pippit real flow:
+   *   submit:  pippit-tool-cli generate-video --prompt X --model M --ratio R
+   *              --duration N --resolution RES [--image P ...] [--audio P ...]
+   *            -> JSON { thread_id, run_id }
+   *   poll:    pippit-tool-cli query-result --thread-id T --run-id R --download-dir DIR [--wait]
+   */
+  async function runXiaoyunque(item, controller, deadline) {
+    const command = settings.xiaoyunqueCommand
+    const model = String(item.model || settings.xiaoyunqueModel || '').trim()
+    const ratio = item.ratio
+    const resolution = settings.xiaoyunqueResolution || '720p'
+
+    if (!model) {
+      store.update(item.id, {
+        status: 'failed', stage: '',
+        error: '未配置小云雀模型：先在面板「小云雀模型 key」里填 model list 中的模型，或在提交时传入 model 参数。',
+      })
+      return
+    }
+
+    const submitArgs = [
+      'generate-video',
+      '--prompt', item.prompt,
+      '--model', model,
+      '--ratio', ratio,
+      '--duration', String(item.seconds),
+      '--resolution', resolution,
+    ]
+    // Pippit supports repeatable --image / --video / --audio. Route workspace
+    // assets by their extension (portraits -> --image, voices -> --audio).
+    for (const asset of item.assets) {
+      const ext = path.extname(asset).toLowerCase()
+      if (IMAGE_EXT.has(ext)) submitArgs.push('--image', asset)
+      else if (AUDIO_EXT.has(ext)) submitArgs.push('--audio', asset)
+      else if (VIDEO_EXT.has(ext)) submitArgs.push('--video', asset)
+    }
+
+    store.update(item.id, { stage: '提交生成任务…' })
+    const { outcome, tail } = await cliRun(item, command, submitArgs, controller, '生成中…')
+    if (Date.now() > deadline) throw new Error('任务超时')
+    if (controller.signal.aborted) return
+    if (outcome.code !== 0) {
+      store.update(item.id, { status: 'failed', stage: '', error: classifyCliFailure(tail) })
+      return
+    }
+
+    const submitted = parseCliJson(tail)
+    const threadId = submitted?.thread_id || submitted?.data?.thread_id
+    const runId = submitted?.run_id || submitted?.data?.run_id
+    if (!threadId || !runId) {
+      store.update(item.id, {
+        status: 'failed', stage: '',
+        error: `提交成功但未找到 thread_id / run_id：${tail.trim().slice(-400) || 'CLI 无输出'}`,
+      })
+      return
+    }
+    store.update(item.id, { threadId, runId, stage: '任务已提交，等待成片…' })
+
+    const pollIntervalMs = 3000
+    while (!controller.signal.aborted && Date.now() <= deadline) {
+      await new Promise((resolve) => setTimeout(resolve, pollIntervalMs))
+      const pollArgs = [
+        'query-result',
+        '--thread-id', String(threadId),
+        '--run-id', String(runId),
+        '--download-dir', item.outDir,
+      ]
+      const polled = await cliRun(item, command, pollArgs, controller, '查询结果…')
+      if (controller.signal.aborted) return
+      if (polled.outcome.code !== 0) {
+        store.update(item.id, { status: 'failed', stage: '', error: classifyCliFailure(polled.tail) })
+        return
+      }
+      const result = parseCliJson(polled.tail)
+      const state = String(result?.status || result?.run_state || result?.data?.status || '').toLowerCase()
+      if (/^(succeeded|success|completed)$/iu.test(state)) {
+        const produced = await newestVideo(item.outDir) || await newestMediaUrl(result, item.outDir, item.id)
+        store.update(item.id, {
+          status: produced ? 'succeeded' : 'completed',
+          stage: '', resultFile: produced || '',
+          resultName: produced ? path.basename(produced) : '',
+          error: produced ? '' : '生成成功，但未能定位输出文件（可查看 tail 中的下载地址）',
+        })
+        return
+      }
+      if (/^(failed|fail|canceled|cancelled|interrupted)$/iu.test(state)) {
+        const reason = result?.fail_reason?.message || result?.fail_reason || result?.data?.fail_reason || '生成失败'
+        store.update(item.id, { status: 'failed', stage: '', error: String(reason).slice(-600) })
+        return
+      }
+      if (/^input_required$/iu.test(state)) {
+        store.update(item.id, { status: 'failed', stage: '', error: '任务需要人工输入/确认，已停止自动轮询。' })
+        return
+      }
+      store.update(item.id, { stage: `生成中…（${state || 'running'}）` })
+    }
+    if (controller.signal.aborted) return
+    store.update(item.id, { status: 'failed', stage: '', error: '查询超时，任务仍可能在服务端生成中' })
+  }
+
   function startVideoTask(item) {
     const controller = new AbortController()
     live.set(item.id, { controller })
-    store.update(item.id, { stage: '调用 CLI…' })
 
     void (async () => {
       const deadline = Date.now() + TASK_DEADLINE_MS
       try {
-        const command = item.provider === 'dreamina' ? settings.dreaminaCommand : settings.xiaoyunqueCommand
-        const args = ['generate', '--prompt', item.prompt, '--ratio', item.ratio, '--duration', String(item.seconds), '--output', item.outDir]
-        if (item.model) args.push('--model', item.model)
-        for (const asset of item.assets) args.push('--asset', asset)
-
-        store.update(item.id, { status: 'running', command, args })
-        let tail = ''
-        const outcome = await runCli({
-          command,
-          args,
-          cwd: item.cwd,
-          signal: controller.signal,
-          onLine: (chunk, stream) => {
-            tail = (tail + chunk).slice(-4000)
-            store.update(item.id, { stage: stream === 'stderr' ? 'CLI 输出…' : '生成中…', tail })
-          },
-        })
-
-        if (Date.now() > deadline) throw new Error('任务超时')
-        if (controller.signal.aborted) {
-          store.update(item.id, { status: 'cancelled', stage: '', error: '已取消' })
-          return
-        }
-        if (outcome.code !== 0) {
-          store.update(item.id, { status: 'failed', stage: '', error: tail.trim().slice(-600) || `CLI 退出码 ${outcome.code}` })
-          return
-        }
-        const produced = await newestVideo(item.outDir)
-        store.update(item.id, {
-          status: produced ? 'succeeded' : 'completed',
-          stage: '',
-          resultFile: produced,
-          resultName: produced ? path.basename(produced) : '',
-          error: produced ? '' : 'CLI 执行成功，但未在输出目录找到视频文件',
-        })
+        if (item.provider === 'dreamina') await runDreamina(item, controller, deadline)
+        else await runXiaoyunque(item, controller, deadline)
       } catch (error) {
         store.update(item.id, {
           status: controller.signal.aborted ? 'cancelled' : 'failed',
@@ -466,6 +709,50 @@ export function apply(ctx, config = {}) {
         }
       }
       return best
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * If no local file appeared but the CLI returned an https media URL, download
+   * it into the workspace output dir. Both CLIs can return URLs in their result
+   * JSON; downloading here keeps everything inside the current workspace.
+   */
+  async function newestMediaUrl(result, outDir, taskId) {
+    const urls = []
+    const collect = (value, depth) => {
+      if (depth > 8 || urls.length > 0) return
+      if (typeof value === 'string') {
+        if (/^https:\/\//iu.test(value) && /\.(mp4|mov|webm|mkv|m4v)(\?|$)/iu.test(value)) urls.push(value)
+        return
+      }
+      if (Array.isArray(value)) {
+        for (const item of value) collect(item, depth + 1)
+        return
+      }
+      if (value && typeof value === 'object') {
+        for (const item of Object.values(value)) collect(item, depth + 1)
+      }
+    }
+    collect(result, 0)
+    if (urls.length === 0) return null
+    const url = urls[0]
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(120000) })
+      if (!response.ok || !response.body) return null
+      const ext = (url.match(/\.(mp4|mov|webm|mkv|m4v)(\?|$)/iu) || [])[1] || 'mp4'
+      const target = path.join(outDir, `${taskId}.${ext}`)
+      await mkdir(outDir, { recursive: true })
+      const chunks = []
+      let size = 0
+      for await (const chunk of response.body) {
+        size += chunk.length
+        if (size > MAX_DOWNLOAD_BYTES) throw new Error('下载文件超过 2GB 上限')
+        chunks.push(chunk)
+      }
+      await writeFile(target, Buffer.concat(chunks))
+      return target
     } catch {
       return null
     }
@@ -588,15 +875,16 @@ export function apply(ctx, config = {}) {
   register({
     name: 'video_submit',
     description:
-      '用小云雀或 Dreamina 的 CLI 提交一个视频生成任务，返回任务 id 后可轮询 video_status。'
+      '用小云雀（Pippit / pippit-tool-cli）或即梦（dreamina CLI）的官方 CLI 提交视频生成任务，'
+      + '返回任务 id 后可用 video_status 轮询。工具会按 CLI 的真实语法提交并自动查询、下载成片。'
       + '任务在宿主后台运行，离开会话不会中断。输出目录与素材路径都相对于当前会话工作区。',
     parameters: {
       prompt: { type: 'string', required: true, description: '提示词或分镜词文本。' },
       provider: { type: 'string', enum: ['xiaoyunque', 'dreamina'], description: '视频供应商，默认 xiaoyunque。' },
-      assets: { type: 'array', items: { type: 'string' }, description: '要关联的素材相对路径，来自 short_drama_assets。' },
+      assets: { type: 'array', items: { type: 'string' }, description: '要关联的素材相对路径，来自 short_drama_assets；图片会作为首帧，音频作为配音。' },
       ratio: { type: 'string', description: '画面比例，默认取插件配置 defaultRatio。' },
       seconds: { type: 'integer', description: '时长（秒），默认取插件配置 defaultDuration。' },
-      model: { type: 'string', description: '传给 CLI 的模型名，可选。' },
+      model: { type: 'string', description: '模型：dreamina 传 model_version（如 seedance2.0mini），小云雀传 model list 的 key（如 Seedance_2.0_mini_lite）；可选，默认取面板配置。' },
       outputDir: { type: 'string', description: '输出目录，相对工作区，默认取插件配置 downloadFolder。' },
     },
     output: {
@@ -802,6 +1090,10 @@ export function apply(ctx, config = {}) {
       dreaminaCommand: settings.dreaminaCommand,
       defaultRatio: settings.defaultRatio,
       defaultDuration: settings.defaultDuration,
+      xiaoyunqueModel: settings.xiaoyunqueModel,
+      dreaminaModelVersion: settings.dreaminaModelVersion,
+      xiaoyunqueResolution: settings.xiaoyunqueResolution,
+      dreaminaResolution: settings.dreaminaResolution,
       downloadFolder: settings.downloadFolder,
       storyboardPreset: settings.storyboardPreset,
       assetExtensions: settings.assetExtensions,
