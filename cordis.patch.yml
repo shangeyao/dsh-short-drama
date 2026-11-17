@@ -1,0 +1,30 @@
+- insert:
+    - id: dsh-short-drama
+      name: '@local/dsh-short-drama'
+      config:
+        geminiProvider: google
+        geminiModel: gemini-2.5-pro
+        geminiApiKeyRef: GEMINI_API_KEY
+        geminiTemperature: 0.7
+        storyboardPreset: |
+          你是一位资深短剧分镜师。请把用户提供的剧本转换为分镜词列表。
+          要求：
+          1. 按镜头顺序输出，每个镜头包含：镜头编号、景别、画面描述、台词/旁白、时长(秒)、情绪/氛围、所需资产(人物/音色/视频)、备注。
+          2. 画面描述要具体、可视化，便于直接用于 AI 视频生成。
+          3. 时长总和应与剧本长度匹配，单镜头不超过 15 秒。
+          4. 使用 Markdown 表格输出，表头固定为：镜头 | 景别 | 画面 | 台词 | 时长 | 资产 | 备注。
+          5. 只输出表格，不要输出解释文字。
+        xiaoyunqueCommand: xiaoyunque
+        dreaminaCommand: dreamina
+        assetExtensions:
+          - .png
+          - .jpg
+          - .jpeg
+          - .webp
+          - .mp4
+          - .mov
+          - .mp3
+          - .wav
+        defaultRatio: '9:16'
+        defaultDuration: 5
+        downloadFolder: generated-videos

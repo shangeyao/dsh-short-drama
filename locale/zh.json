@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "短剧工坊",
+    "description": "左侧栏工作台：用 Gemini 按可自定义的分镜词规则把剧本转成分镜词，再通过小云雀与 Dreamina 的 CLI 生成视频。可自动关联工作区内的短剧资产（人像、音色、视频），设置比例、时长、模型，跟踪任务进度，并把生成的视频下载到项目的指定文件夹。需要配置 Gemini 供应商或 GEMINI_API_KEY，并把两个 CLI 加入 PATH。",
+    "detail": "docs/DETAIL.zh.md"
+  }
+}

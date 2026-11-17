@@ -1,0 +1,4 @@
+node_modules/
+.dsh_tmp/
+*.log
+.DS_Store
