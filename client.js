@@ -42,6 +42,20 @@ window.__ModuleLoader__.load({
       'field.geminiModel': '模型',
       'field.geminiApiKeyEnv': 'API Key 环境变量 / 凭据名',
       'field.geminiBaseURL': 'API 基址',
+      'gemini.auto': '自动连接',
+      'gemini.connected': '已连接',
+      'gemini.disconnected': '未连接',
+      'gemini.checking': '检测中…',
+      'gemini.recheck': '重新检测连接',
+      'gemini.models': 'Gemini 模型（自动获取）',
+      'gemini.modelsHint': '模型列表直接从 Gemini API 读取，下拉选择即可；未连接时显示内置默认。',
+      'gemini.saveKey': '保存 Key 到凭据库',
+      'gemini.saving': '保存中…',
+      'gemini.keyPlaceholder': '粘贴 Gemini API Key（AIza…）',
+      'gemini.keyHint': '只存一次，写入 DSH 凭据库（不进配置文件）；之后所有会话自动复用。',
+      'gemini.saved': 'Key 已保存，连接已自动刷新。',
+      'gemini.noKey': '未检测到 Key：可在「设置 → 模型 → google」配置，或在下方粘贴一次。',
+      'gemini.loadError': '连接检测失败',
       'field.xiaoyunqueModel': '小云雀模型（自动获取）',
       'field.dreaminaModelVersion': '即梦模型（自动获取）',
       'field.xiaoyunqueResolution': '小云雀分辨率',
@@ -106,6 +120,20 @@ window.__ModuleLoader__.load({
       'field.geminiModel': 'Model',
       'field.geminiApiKeyEnv': 'API key env / credential name',
       'field.geminiBaseURL': 'API base URL',
+      'gemini.auto': 'Auto-connect',
+      'gemini.connected': 'Connected',
+      'gemini.disconnected': 'Not connected',
+      'gemini.checking': 'Checking…',
+      'gemini.recheck': 'Re-check connection',
+      'gemini.models': 'Gemini models (auto-detected)',
+      'gemini.modelsHint': 'Models are read straight from the Gemini API; pick one from the dropdown. A builtin default is shown until connected.',
+      'gemini.saveKey': 'Save key to credential store',
+      'gemini.saving': 'Saving…',
+      'gemini.keyPlaceholder': 'Paste Gemini API key (AIza…)',
+      'gemini.keyHint': 'Saved once into the DSH credential store (never in config); reused automatically by all sessions.',
+      'gemini.saved': 'Key saved; connection refreshed.',
+      'gemini.noKey': 'No key found: configure one under Settings → Models → google, or paste one below.',
+      'gemini.loadError': 'Connection check failed',
       'field.xiaoyunqueModel': 'Xiaoyunque model (auto-detected)',
       'field.dreaminaModelVersion': 'Jimeng model (auto-detected)',
       'field.xiaoyunqueResolution': 'Xiaoyunque resolution',
@@ -284,6 +312,51 @@ window.__ModuleLoader__.load({
       const [discover, setDiscover] = useState(null)
       const [discovering, setDiscovering] = useState(false)
       const [updating, setUpdating] = useState('')
+      const [gemini, setGemini] = useState(null)
+      const [geminiChecking, setGeminiChecking] = useState(false)
+      const [keyInput, setKeyInput] = useState('')
+      const [keySaving, setKeySaving] = useState(false)
+
+      const loadGemini = useCallback(async () => {
+        setGeminiChecking(true)
+        try {
+          const data = await getJson('/gemini/models')
+          setGemini(data)
+          // Auto-select first live model; keep builtin default if none.
+          if (data.connected && data.models && data.models.length) {
+            setDraft((current) => {
+              if (!current) return current
+              const valid = data.models.some((m) => m.value === current.geminiModel)
+              const next = valid ? current : { ...current, geminiModel: data.models[0].value }
+              setConfig((baseline) => (baseline ? { ...baseline, geminiModel: next.geminiModel } : baseline))
+              return next
+            })
+          }
+        } catch (caught) {
+          setError(caught instanceof Error ? caught.message : String(caught))
+        } finally {
+          setGeminiChecking(false)
+        }
+      }, [])
+
+      const onSaveKey = useCallback(async () => {
+        const clean = String(keyInput || '').trim()
+        if (!clean) return
+        setKeySaving(true)
+        setError('')
+        setNote('')
+        try {
+          const ref = (gemini && gemini.keyRef) || (config && config.geminiApiKeyEnv) || 'GEMINI_API_KEY'
+          await postJson('/gemini/key', { ref, key: clean })
+          setKeyInput('')
+          setNote(t('gemini.saved'))
+          await loadGemini()
+        } catch (caught) {
+          setError(caught instanceof Error ? caught.message : String(caught))
+        } finally {
+          setKeySaving(false)
+        }
+      }, [keyInput, gemini, config, loadGemini, t])
 
       const onUpdateCli = useCallback(async (provider) => {
         setUpdating(provider)
@@ -346,12 +419,13 @@ window.__ModuleLoader__.load({
           // Discover only after config is in place, so auto-selection is not
           // overwritten by a late config response.
           void loadDiscover(false)
+          void loadGemini()
         } catch (caught) {
           setError(caught instanceof Error ? caught.message : String(caught))
         } finally {
           setLoading(false)
         }
-      }, [loadDiscover])
+      }, [loadDiscover, loadGemini])
 
       useEffect(() => {
         void load()
@@ -533,10 +607,61 @@ window.__ModuleLoader__.load({
                     h(
                       'div',
                       { className: 'sd-card' },
-                      h('div', { className: 'sd-card-title' }, t('section.model')),
-                      field('geminiProvider', t('field.geminiProvider')),
-                      field('geminiModel', t('field.geminiModel')),
-                      field('geminiApiKeyEnv', t('field.geminiApiKeyEnv')),
+                      h(
+                        'div',
+                        { className: 'sd-discover-head' },
+                        h('div', { className: 'sd-card-title', style: { marginBottom: 0 } }, t('section.model')),
+                        h('button', {
+                          type: 'button', className: 'sd-button sd-ghost',
+                          disabled: geminiChecking,
+                          onClick: () => { void loadGemini() },
+                        }, geminiChecking ? t('gemini.checking') : t('gemini.recheck')),
+                      ),
+                      h(
+                        'div',
+                        { className: 'sd-cli-name', style: { marginTop: '10px' } },
+                        t('gemini.auto'),
+                        h('span', {
+                          className: 'sd-status-chip',
+                          'data-ok': gemini && gemini.connected ? 'true' : 'false',
+                        }, geminiChecking ? t('gemini.checking')
+                          : (gemini && gemini.connected ? t('gemini.connected') : t('gemini.disconnected'))),
+                        gemini && gemini.keySource
+                          ? h('span', { className: 'sd-hint', style: { marginTop: 0 } }, gemini.keySource)
+                          : null,
+                      ),
+                      gemini && gemini.error
+                        ? h('div', { className: 'sd-error', style: { marginBottom: '10px' } }, `${t('gemini.loadError')}: ${gemini.error}`)
+                        : null,
+                      !gemini || !gemini.connected
+                        ? h('div', { className: 'sd-error', style: { marginBottom: '10px' } }, t('gemini.noKey'))
+                        : null,
+                      selectField(
+                        'geminiModel', t('gemini.models'),
+                        gemini && gemini.models && gemini.models.length
+                          ? gemini.models
+                          : [{ value: 'gemini-2.5-pro', label: 'gemini-2.5-pro' }],
+                      ),
+                      h('div', { className: 'sd-hint' }, t('gemini.modelsHint')),
+                      h(
+                        'div',
+                        { className: 'sd-field' },
+                        h('label', { className: 'sd-label' }, t('gemini.saveKey')),
+                        h('input', {
+                          className: 'sd-input',
+                          type: 'password',
+                          value: keyInput,
+                          placeholder: t('gemini.keyPlaceholder'),
+                          autoComplete: 'new-password',
+                          onChange: (event) => setKeyInput(event.target.value),
+                        }),
+                        h('div', { className: 'sd-hint' }, t('gemini.keyHint')),
+                        h('button', {
+                          type: 'button', className: 'sd-button sd-ghost', style: { marginTop: '8px' },
+                          disabled: keySaving || !keyInput.trim(),
+                          onClick: () => { void onSaveKey() },
+                        }, keySaving ? t('gemini.saving') : t('gemini.saveKey')),
+                      ),
                       field('geminiBaseURL', t('field.geminiBaseURL')),
                     ),
                     h(

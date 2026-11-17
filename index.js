@@ -22,7 +22,7 @@ import { copyFile, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/pro
 import { homedir } from 'node:os'
 import path from 'node:path'
 
-const VERSION = '1.4.0'
+const VERSION = '1.5.0'
 
 /** Prefix route owned by the configuration panel. */
 const ROUTE_PREFIX = '/short-drama/api'
@@ -737,20 +737,113 @@ export function apply(ctx, config = {}) {
 
   /* --------------------------------------------------------------- gemini */
 
+  // Credential references DSH commonly uses for a Gemini key. The configured
+  // geminiApiKeyEnv is tried first; these are auto-fallbacks so a key the user
+  // already saved for another plugin / the Models page is reused automatically.
+  const GEMINI_KEY_REFS = [
+    settings.geminiApiKeyEnv,
+    'GEMINI_API_KEY',
+    'GOOGLE_API_KEY',
+    'GOOGLE_GENERATIVE_AI_API_KEY',
+    'GOOGLE_GEMINI_API_KEY',
+  ].filter((value, index, array) => value && array.indexOf(value) === index)
+
+  /** Resolve a single credential ref through env first, then DSH's credential seam. */
   async function credentialOf(envName) {
     const direct = process.env[envName]
-    if (direct && direct.trim()) return { key: direct.trim(), source: `env:${envName}` }
+    if (direct && direct.trim()) return { key: direct.trim(), source: `env:${envName}`, ref: envName }
     try {
       const credentials = ctx.get('credentials')
       if (credentials && typeof credentials.resolve === 'function') {
         const hit = await credentials.resolve(envName)
         const value = typeof hit === 'string' ? hit : hit?.value
-        if (value && String(value).trim()) return { key: String(value).trim(), source: `dsh:${envName}` }
+        if (value && String(value).trim()) return { key: String(value).trim(), source: `dsh:${envName}`, ref: envName }
       }
     } catch {
       /* the credential service is optional */
     }
-    return { key: '', source: '' }
+    return { key: '', source: '', ref: envName }
+  }
+
+  /** Read apiKeyEnv refs declared by dsh-llm-pi-ai's configured routes. */
+  async function piAiKeyRefs() {
+    const refs = []
+    try {
+      // configEditor exposes every mounted entry's raw config without secrets.
+      const editor = ctx.get('configEditor')
+      if (editor && typeof editor.configuration === 'function') {
+        for (const row of editor.configuration()) {
+          const name = String(row && row.name || '')
+          const source = { ...(row.inherited || {}), ...(row.override || {}) }
+          if (/llm-pi-ai/iu.test(name) && source.providers && typeof source.providers === 'object') {
+            for (const [route, spec] of Object.entries(source.providers)) {
+              if (!/google|gemini/iu.test(route)) continue
+              if (spec && typeof spec.apiKeyEnv === 'string') refs.push(spec.apiKeyEnv)
+              refs.push(`${String(route).toUpperCase().replace(/[^A-Z0-9]+/gu, '_')}_API_KEY`)
+            }
+          }
+        }
+      }
+    } catch {
+      /* best-effort discovery */
+    }
+    return refs
+  }
+
+  /** Find a usable Gemini key across configured + common refs. Never caches. */
+  async function findGeminiKey() {
+    const extra = await piAiKeyRefs()
+    const refs = [...new Set([...GEMINI_KEY_REFS, ...extra])]
+    for (const ref of refs) {
+      const hit = await credentialOf(ref)
+      if (hit.key) return hit
+    }
+    return { key: '', source: '', ref: settings.geminiApiKeyEnv }
+  }
+
+  /** List live Gemini models with the resolved key (read-only connectivity check). */
+  async function listGeminiModels(apiKey) {
+    const url = `${settings.geminiBaseURL}/models?pageSize=100`
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: { 'x-goog-api-key': apiKey },
+      signal: AbortSignal.timeout(15000),
+    })
+    if (!response.ok) {
+      const detail = (await response.text()).slice(0, 300)
+      throw new Error(`Gemini models 请求失败（HTTP ${response.status}）：${detail}`)
+    }
+    const payload = await response.json()
+    const models = Array.isArray(payload?.models) ? payload.models : []
+    return models
+      .filter((model) => /gemini/iu.test(String(model.name || '')))
+      .map((model) => {
+        const id = String(model.name || '').replace(/^models\//u, '')
+        return { value: id, label: String(model.displayName || id), methods: model.supportedGenerationMethods || [] }
+      })
+      .filter((model) => !model.methods.length || model.methods.includes('generateContent'))
+      .map(({ value, label }) => ({ value, label }))
+  }
+
+  /** Save a Gemini key into DSH's credential store (never into plain config). */
+  async function saveGeminiKey(ref, value) {
+    const credentials = ctx.get('credentials')
+    if (!credentials || typeof credentials.set !== 'function') {
+      throw new HttpError(501, '当前 profile 没有可写凭据库（credentials.set 不可用）')
+    }
+    const clean = String(value || '').trim()
+    if (!clean) throw new HttpError(400, 'Key 不能为空')
+    await credentials.set(credentialRefLike(ref), clean)
+    return ref
+  }
+
+  /** A credential ref is just an env-var-shaped identifier; validate it. */
+  function credentialRefLike(ref) {
+    const name = String(ref || '').trim()
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name)) {
+      throw new HttpError(400, '凭据名必须是合法的环境变量名（字母/数字/下划线）')
+    }
+    return name
   }
 
   async function generateStoryboard(script, preset, model, apiKey) {
@@ -1172,9 +1265,9 @@ export function apply(ctx, config = {}) {
       const script = String(args.script || '').trim()
       if (!script) throw new ToolError('剧本内容不能为空')
       if (script.length > MAX_SCRIPT) throw new ToolError('剧本过长')
-      const credential = await credentialOf(settings.geminiApiKeyEnv)
+      const credential = await findGeminiKey()
       if (!credential.key) {
-        throw new ToolError(`未找到 Gemini 凭据：请设置 ${settings.geminiApiKeyEnv}，或在「设置 → 模型」中配置 google/Gemini 供应商`)
+        throw new ToolError('未找到 Gemini 凭据：请在左侧栏「短剧工坊·配置」里粘贴 Key（会存入 DSH 凭据库），或设置 GEMINI_API_KEY，或在「设置 → 模型」中配置 google/Gemini 供应商')
       }
       const root = await sessionRoot(exec.agent, exec.signal)
       const model = String(args.model || '').trim() || settings.geminiModel
@@ -1474,8 +1567,13 @@ export function apply(ctx, config = {}) {
   async function handleConfig(req, res) {
     const method = req.method || 'GET'
     if (method === 'GET') {
-      const credential = await credentialOf(settings.geminiApiKeyEnv)
-      sendJson(res, 200, { ok: true, config: configView(), keyConfigured: Boolean(credential.key), keySource: credential.source })
+      const credential = await findGeminiKey()
+      sendJson(res, 200, {
+        ok: true, config: configView(),
+        keyConfigured: Boolean(credential.key),
+        keySource: credential.source,
+        keyRef: credential.ref,
+      })
       return
     }
     if (method !== 'POST') throw new HttpError(405, '只支持 GET / POST')
@@ -1525,6 +1623,36 @@ export function apply(ctx, config = {}) {
             if (rest === '/discover') {
               const force = url.searchParams.get('force') === '1'
               sendJson(res, 200, { ok: true, ...(await discover(force)) })
+              return
+            }
+            // Auto-connect: report the resolved Gemini key + live model list.
+            if (rest === '/gemini/models') {
+              const credential = await findGeminiKey()
+              if (!credential.key) {
+                sendJson(res, 200, { ok: true, connected: false, keyRef: credential.ref, models: [] })
+                return
+              }
+              try {
+                const models = await listGeminiModels(credential.key)
+                sendJson(res, 200, {
+                  ok: true, connected: true, keyRef: credential.ref,
+                  keySource: credential.source, models,
+                })
+              } catch (error) {
+                sendJson(res, 200, {
+                  ok: true, connected: false, keyRef: credential.ref,
+                  keySource: credential.source, error: messageOf(error), models: [],
+                })
+              }
+              return
+            }
+            // Save a pasted key into DSH's credential store (never plain config).
+            if (rest === '/gemini/key' && (req.method || 'GET') === 'POST') {
+              const body = await readJson(req)
+              const ref = String(body && body.ref || settings.geminiApiKeyEnv)
+              const key = String(body && body.key || '')
+              await saveGeminiKey(ref, key)
+              sendJson(res, 200, { ok: true, saved: true, ref })
               return
             }
             if (rest === '/update' && (req.method || 'GET') === 'POST') {

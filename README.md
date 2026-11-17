@@ -72,9 +72,9 @@ dsh plugin add github:shangeyao/dsh-short-drama
 
 | 字段 | 说明 | 默认 |
 |---|---|---|
-| `geminiProvider` / `geminiModel` | 供应商与模型名 | `google` / `gemini-2.5-pro` |
-| `geminiApiKeyEnv` | Key 的环境变量 / 凭据名 | `GEMINI_API_KEY` |
-| `geminiBaseURL` | Gemini API 基址 | `https://generativelanguage.googleapis.com/v1beta` |
+| `geminiModel` | 模型（面板**下拉选择**，由 Gemini API 自动获取） | `gemini-2.5-pro` |
+| `geminiApiKeyEnv` | Key 的候选凭据名之一（**会自动探测多个**，通常不用改） | `GEMINI_API_KEY` |
+| `geminiBaseURL` | Gemini API 基址（兼容代理时可改） | `https://generativelanguage.googleapis.com/v1beta` |
 | `xiaoyunqueCommand` / `dreaminaCommand` | CLI 兜底命令名（**路径自动探测，通常不用填**） | `pippit-tool-cli` / `dreamina` |
 | `xiaoyunqueModel` | 小云雀模型（面板**下拉选择**，由 `model list` 自动获取） | 空（自动选第一个） |
 | `dreaminaModelVersion` | 即梦模型（面板**下拉选择**，由 `text2video -h` 自动获取） | `seedance2.0mini` |
@@ -85,6 +85,16 @@ dsh plugin add github:shangeyao/dsh-short-drama
 | `storyboardPreset` | 分镜规则（即系统提示词） | 内置中文分镜规范 |
 
 配置改完点「保存配置」，会写回 profile；**重启插件后生效**。
+
+---
+
+## Gemini 连接也是自动的
+
+面板打开时插件会按 `geminiApiKeyEnv`、`GEMINI_API_KEY`、`GOOGLE_API_KEY`、`GOOGLE_GENERATIVE_AI_API_KEY` 等候选引用，自动在 DSH 凭据库和环境变量里找已存过的 Key（包括你在「设置 → 模型 → google」配过的），找到即显示「已连接」并标出来源。模型列表直接调 Gemini `models` 接口拉取，下拉选择，不用手填模型名。
+
+如果本机确实没有 Key，面板里粘贴一次即可——插件通过 `ctx.credentials.set()` 把 Key 存进 DSH 凭据库（`<DSH_HOME>/.credentials.yaml`，写保护、**不进 cordis.patch.yml**），之后所有会话自动复用，无需重复输入。
+
+> 密钥始终只留在宿主进程，浏览器面板只看到「是否已连接 + 来源」，拿不到明文。
 
 ---
 
