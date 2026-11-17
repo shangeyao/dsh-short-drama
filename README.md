@@ -75,11 +75,10 @@ dsh plugin add github:shangeyao/dsh-short-drama
 | `geminiProvider` / `geminiModel` | 供应商与模型名 | `google` / `gemini-2.5-pro` |
 | `geminiApiKeyEnv` | Key 的环境变量 / 凭据名 | `GEMINI_API_KEY` |
 | `geminiBaseURL` | Gemini API 基址 | `https://generativelanguage.googleapis.com/v1beta` |
-| `xiaoyunqueCommand` | 小云雀 Pippit CLI 命令 | `pippit-tool-cli` |
-| `dreaminaCommand` | 即梦官方 CLI 命令 | `dreamina` |
-| `xiaoyunqueModel` | 小云雀模型 key（`model list` 查） | 空（提示先查） |
-| `dreaminaModelVersion` | 即梦 `model_version` | `seedance2.0mini` |
-| `xiaoyunqueResolution` / `dreaminaResolution` | 分辨率 | `720p` / `720p` |
+| `xiaoyunqueCommand` / `dreaminaCommand` | CLI 兜底命令名（**路径自动探测，通常不用填**） | `pippit-tool-cli` / `dreamina` |
+| `xiaoyunqueModel` | 小云雀模型（面板**下拉选择**，由 `model list` 自动获取） | 空（自动选第一个） |
+| `dreaminaModelVersion` | 即梦模型（面板**下拉选择**，由 `text2video -h` 自动获取） | `seedance2.0mini` |
+| `xiaoyunqueResolution` / `dreaminaResolution` | 分辨率（下拉/可填） | `720p` / `720p` |
 | `defaultRatio` / `defaultDuration` | 提交默认比例与时长 | `9:16` / `5` |
 | `downloadFolder` | 默认输出目录 | `generated-videos` |
 | `assetExtensions` | 素材扫描扩展名 | 图片 / 视频 / 音频常见格式 |
@@ -91,7 +90,9 @@ dsh plugin add github:shangeyao/dsh-short-drama
 
 ## 出片 CLI 的安装与真实用法
 
-插件直接调用两家**官方 CLI**，参数按各自真实语法生成，不是臆测的 `generate --output`：
+插件直接调用两家**官方 CLI**，参数按各自真实语法生成，不是臆测的 `generate --output`。
+
+**模型不用手填。** 面板打开时插件会自动探测两个 CLI 装在哪（PATH、`~/.local/bin`、npm 全局目录），再直接问它们当前有哪些模型——小云雀跑 `pippit-tool-cli model list`，即梦读 `dreamina text2video -h` 里的 `model_version:` 行——列成下拉框给你选。改完 CLI 或重装后，点面板里的「重新检测」即可刷新。若没装 CLI，会显示一份内置模型清单兜底。
 
 ### 小云雀（Pippit，`pippit-tool-cli`）
 

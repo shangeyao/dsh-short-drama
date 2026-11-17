@@ -17,12 +17,12 @@
 
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { createWriteStream } from 'node:fs'
+import { access, createWriteStream } from 'node:fs'
 import { copyFile, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import path from 'node:path'
 
-const VERSION = '1.2.0'
+const VERSION = '1.3.0'
 
 /** Prefix route owned by the configuration panel. */
 const ROUTE_PREFIX = '/short-drama/api'
@@ -82,6 +82,151 @@ const TASK_DEADLINE_MS = 40 * 60 * 1000
 const VIDEO_EXT = new Set(['.mp4', '.mov', '.webm', '.mkv', '.avi'])
 const AUDIO_EXT = new Set(['.mp3', '.wav', '.m4a', '.aac', '.flac'])
 const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif'])
+
+/**
+ * Built-in model catalogs (from the official CLIs' own model lists). Used as a
+ * fallback so the panel always has something to pick, and to annotate live
+ * results discovered by running `model list` / `-h` on the installed CLI.
+ */
+const KNOWN_MODELS = {
+  xiaoyunque: [
+    { value: 'Seedance_2.5', label: 'Seedance 2.5' },
+    { value: 'Seedance_2.0_mini_lite', label: 'Seedance 2.0 mini lite' },
+    { value: 'Seedance_2.0_mini', label: 'Seedance 2.0 mini' },
+    { value: 'seedance2.0_vision', label: 'Seedance 2.0 vision' },
+    { value: 'seedance2.0_direct', label: 'Seedance 2.0 direct' },
+    { value: 'Seedance_2.5_draft', label: 'Seedance 2.5 draft' },
+  ],
+  dreamina: [
+    { value: 'seedance2.0mini', label: 'Seedance 2.0 mini' },
+    { value: 'seedance2.0', label: 'Seedance 2.0' },
+    { value: 'seedance2.0fast', label: 'Seedance 2.0 fast' },
+    { value: 'seedance2.5', label: 'Seedance 2.5' },
+    { value: 'seedance2.0_vip', label: 'Seedance 2.0 VIP（1080p/4k）' },
+    { value: 'seedance2.0fast_vip', label: 'Seedance 2.0 fast VIP' },
+  ],
+}
+
+/** Common install locations, so the panel never asks the user for a path. */
+function cliCandidates(name) {
+  const exe = process.platform === 'win32' ? `${name}.exe` : name
+  const home = homedir()
+  const localBin = path.join(home, '.local', 'bin')
+  const npmGlobal = process.platform === 'win32'
+    ? path.join(process.env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'npm', exe)
+    : path.join(home, '.npm-global', 'bin', name)
+  const list = [
+    name, // resolved via PATH
+    path.join(localBin, exe),
+    path.join(localBin, name),
+    npmGlobal,
+  ]
+  if (process.platform === 'win32') {
+    list.push(path.join(home, 'AppData', 'Local', 'Programs', exe))
+  }
+  return [...new Set(list)]
+}
+
+/** Return the first candidate that is executable (or found on PATH). */
+async function detectCli(candidates) {
+  for (const candidate of candidates) {
+    if (!candidate) continue
+    // PATH names: try spawn --version below via a bare-name probe.
+    if (!path.isAbsolute(candidate) && !candidate.includes(path.sep)) {
+      try {
+        const result = await runProbe(candidate, ['--version'])
+        if (result.code === 0) return { path: candidate, version: extractVersion(result.text) }
+      } catch {
+        /* try next */
+      }
+      continue
+    }
+    try {
+      await access(candidate)
+      const result = await runProbe(candidate, ['--version'])
+      if (result.code === 0) return { path: candidate, version: extractVersion(result.text) }
+    } catch {
+      /* try next */
+    }
+  }
+  return null
+}
+
+function extractVersion(text) {
+  const match = String(text || '').match(/(\d+\.\d+(?:\.\d+)?)/)
+  return match ? match[1] : ''
+}
+
+/** Parse `dreamina text2video -h` output: a `model_version: a,b,c` line. */
+function parseDreaminaModels(text) {
+  const match = String(text || '').match(/model_version:\s*([^\r\n]+)/iu)
+  if (!match?.[1]) return []
+  return match[1].split(',').map((item) => item.trim()).filter(Boolean)
+    .map((value) => ({ value, label: value }))
+}
+
+/** Parse `pippit-tool-cli model list` output: JSON array/object or plain lines. */
+function parseXiaoyunqueModels(text) {
+  const raw = String(text || '').trim()
+  if (!raw) return []
+  // Try JSON first (CLI may print a JSON array of {key,name} or strings).
+  let json = null
+  try {
+    json = JSON.parse(raw)
+  } catch {
+    // find the last JSON-looking line among logs
+    const lines = raw.split(/\r?\n/u).map((line) => line.trim()).filter((line) => /^[\[{]/u.test(line))
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      try { json = JSON.parse(lines[i]); break } catch { /* keep looking */ }
+    }
+  }
+  if (json !== null) {
+    const collect = (value) => {
+      if (Array.isArray(value)) return value.flatMap(collect)
+      if (value && typeof value === 'object') {
+        const key = value.key || value.model || value.id || value.value || value.name
+        if (typeof key === 'string' && key.trim()) {
+          return [{ value: key.trim(), label: String(value.name || value.label || key).trim() }]
+        }
+        return Object.values(value).flatMap(collect)
+      }
+      if (typeof value === 'string' && value.trim()) return [{ value: value.trim(), label: value.trim() }]
+      return []
+    }
+    const found = collect(json)
+    if (found.length) return found
+  }
+  // Fallback: one model key per line (skip headers/logs that aren't model-ish).
+  return raw.split(/\r?\n/u).map((line) => line.trim())
+    .filter((line) => /^[A-Za-z0-9][A-Za-z0-9._-]{2,}$/u.test(line))
+    .map((value) => ({ value, label: value }))
+}
+
+/** Short bounded probe used only for discovery (no task record involved). */
+function runProbe(command, args) {
+  return new Promise((resolve) => {
+    let child
+    try {
+      child = spawn(command, args, {
+        env: process.env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+        shell: process.platform === 'win32',
+      })
+    } catch (error) {
+      resolve({ code: -1, text: messageOf(error) })
+      return
+    }
+    let text = ''
+    child.stdout?.setEncoding('utf8')
+    child.stderr?.setEncoding('utf8')
+    child.stdout?.on('data', (chunk) => { text = (text + chunk).slice(-8000) })
+    child.stderr?.on('data', (chunk) => { text = (text + chunk).slice(-8000) })
+    const timer = setTimeout(() => { try { child.kill('SIGTERM') } catch {} }, 8000)
+    child.once('error', () => { clearTimeout(timer); resolve({ code: -1, text }) })
+    child.once('close', (code) => { clearTimeout(timer); resolve({ code: code === null ? -1 : code, text }) })
+  })
+}
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -365,6 +510,68 @@ export function apply(ctx, config = {}) {
     return insideRoot(root, path.isAbsolute(text) ? text : path.join(root, text))
   }
 
+  /* ----------------------------------------------------------- discovery */
+
+  /**
+   * Auto-detect both CLIs and ask each for its current model list, so the user
+   * never types a model key or a binary path. Results are cached briefly because
+   * the panel may refresh; a forced call re-probes.
+   */
+  let discoveryCache = null
+  let discoveryPromise = null
+
+  async function discover(force = false) {
+    if (!force && discoveryCache) return discoveryCache
+    if (!force && discoveryPromise) return discoveryPromise
+    discoveryPromise = (async () => {
+      const out = { checkedAt: new Date().toISOString(), xiaoyunque: null, dreamina: null }
+
+      // --- Xiaoyunque / Pippit CLI ---
+      const xyqCandidates = [
+        ...cliCandidates('pippit-tool-cli'),
+        ...(settings.xiaoyunqueCommand && settings.xiaoyunqueCommand !== DEFAULTS.xiaoyunqueCommand
+          ? [settings.xiaoyunqueCommand] : []),
+      ]
+      const xyq = await detectCli([...new Set(xyqCandidates)])
+      if (xyq) {
+        const probe = await runProbe(xyq.path, ['model', 'list'])
+        let models = parseXiaoyunqueModels(probe.text)
+        if (!models.length) models = KNOWN_MODELS.xiaoyunque
+        out.xiaoyunque = { ...xyq, models, source: probe.code === 0 ? 'cli' : 'builtin' }
+      } else {
+        out.xiaoyunque = { path: '', version: '', models: KNOWN_MODELS.xiaoyunque, source: 'builtin', installed: false }
+      }
+
+      // --- Dreamina CLI ---
+      const dreaminaCandidates = [
+        ...cliCandidates('dreamina'),
+        ...(settings.dreaminaCommand && settings.dreaminaCommand !== DEFAULTS.dreaminaCommand
+          ? [settings.dreaminaCommand] : []),
+      ]
+      const dreamina = await detectCli([...new Set(dreaminaCandidates)])
+      if (dreamina) {
+        const probe = await runProbe(dreamina.path, ['text2video', '-h'])
+        let models = parseDreaminaModels(probe.text)
+        if (!models.length) models = KNOWN_MODELS.dreamina
+        out.dreamina = { ...dreamina, models, source: probe.code === 0 ? 'cli' : 'builtin' }
+      } else {
+        out.dreamina = { path: '', version: '', models: KNOWN_MODELS.dreamina, source: 'builtin', installed: false }
+      }
+
+      discoveryCache = out
+      return out
+    })().finally(() => { discoveryPromise = null })
+    return discoveryPromise
+  }
+
+  /** Resolve the actual binary path for a submit (discovered, else configured). */
+  async function cliPathFor(provider) {
+    const info = await discover()
+    const found = provider === 'dreamina' ? info.dreamina : info.xiaoyunque
+    if (found && found.path) return found.path
+    return provider === 'dreamina' ? settings.dreaminaCommand : settings.xiaoyunqueCommand
+  }
+
   /* --------------------------------------------------------------- gemini */
 
   async function credentialOf(envName) {
@@ -487,7 +694,7 @@ export function apply(ctx, config = {}) {
    *   download: dreamina query_result --submit_id=ID --download_dir=DIR  (or URL download)
    */
   async function runDreamina(item, controller, deadline) {
-    const command = settings.dreaminaCommand
+    const command = await cliPathFor('dreamina')
     const modelVersion = String(item.model || settings.dreaminaModelVersion || '').trim()
     const ratio = item.ratio
     const resolution = settings.dreaminaResolution || '720p'
@@ -579,7 +786,7 @@ export function apply(ctx, config = {}) {
    *   poll:    pippit-tool-cli query-result --thread-id T --run-id R --download-dir DIR [--wait]
    */
   async function runXiaoyunque(item, controller, deadline) {
-    const command = settings.xiaoyunqueCommand
+    const command = await cliPathFor('xiaoyunque')
     const model = String(item.model || settings.xiaoyunqueModel || '').trim()
     const ratio = item.ratio
     const resolution = settings.xiaoyunqueResolution || '720p'
@@ -912,7 +1119,7 @@ export function apply(ctx, config = {}) {
 
       const assets = asList(args.assets, []).map((asset) => resolveIn(root, asset, ''))
       const provider = args.provider === 'dreamina' ? 'dreamina' : 'xiaoyunque'
-      const command = provider === 'dreamina' ? settings.dreaminaCommand : settings.xiaoyunqueCommand
+      const command = await cliPathFor(provider)
 
       const item = {
         id: randomUUID(),
@@ -1150,6 +1357,11 @@ export function apply(ctx, config = {}) {
             }
             if (rest === '/config') {
               await handleConfig(req, res)
+              return
+            }
+            if (rest === '/discover') {
+              const force = url.searchParams.get('force') === '1'
+              sendJson(res, 200, { ok: true, ...(await discover(force)) })
               return
             }
             throw new HttpError(404, '未知接口')

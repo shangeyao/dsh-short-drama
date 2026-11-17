@@ -42,19 +42,26 @@ window.__ModuleLoader__.load({
       'field.geminiModel': '模型',
       'field.geminiApiKeyEnv': 'API Key 环境变量 / 凭据名',
       'field.geminiBaseURL': 'API 基址',
-      'field.xiaoyunqueCommand': '小云雀 CLI 命令（pippit-tool-cli）',
-      'field.dreaminaCommand': '即梦 CLI 命令（dreamina）',
-      'field.xiaoyunqueModel': '小云雀模型 key（model list 查）',
-      'field.dreaminaModelVersion': '即梦 model_version',
+      'field.xiaoyunqueModel': '小云雀模型（自动获取）',
+      'field.dreaminaModelVersion': '即梦模型（自动获取）',
       'field.xiaoyunqueResolution': '小云雀分辨率',
       'field.dreaminaResolution': '即梦分辨率',
       'field.defaultRatio': '默认比例',
       'field.defaultSeconds': '默认时长（秒）',
       'field.downloadFolder': '默认输出目录',
+      'discover.title': 'CLI 自动识别',
+      'discover.refresh': '重新检测',
+      'discover.checking': '检测中…',
+      'discover.installed': '已安装',
+      'discover.missing': '未安装',
+      'discover.path': '路径',
+      'discover.models': '可用模型',
+      'discover.builtin': '未检测到 CLI，显示的是内置模型列表。装好 CLI 后点「重新检测」即可自动读取。',
+      'discover.selectModel': '选择一个模型…',
       'field.preset': '分镜规则（即提示词）',
       'hint.preset': '写成分镜师的规范即可；Agent 生成分镜词时会把它作为系统提示词。',
-      'hint.commands': '小云雀 = Pippit 官方 CLI（pippit-tool-cli，npm i -g @pippit-dev/cli），首次 login；即梦 = 官方 dreamina CLI，首次 login --headless，且仅高级会员可出片。命令名或绝对路径。',
-      'hint.models': '小云雀模型 key 请先跑 pippit-tool-cli model list 查；即梦填 model_version，如 seedance2.0mini / seedance2.0 / seedance2.5。留空则用默认值。',
+      'hint.commands': '路径由插件自动探测（PATH、~/.local/bin、npm 全局目录），不用手填。小云雀 = Pippit CLI（npm i -g @pippit-dev/cli 后 pippit-tool-cli login）；即梦 = 官方 dreamina CLI（curl https://jimeng.jianying.com/cli | bash 后 dreamina login --headless，出片需高级会员）。',
+      'hint.models': '模型列表由插件直接问 CLI（pippit-tool-cli model list / dreamina text2video -h）得到；未装 CLI 时显示内置清单。点「重新检测」刷新。',
       'hint.paths': '相对路径按当前会话的工作区解析。',
       'tools.intro': '在会话里直接让我调用这些工具，全部以当前工作区为根：',
       'tools.storyboard': '把剧本转成分镜词，并写入工作区里的 Markdown 文件',
@@ -88,19 +95,26 @@ window.__ModuleLoader__.load({
       'field.geminiModel': 'Model',
       'field.geminiApiKeyEnv': 'API key env / credential name',
       'field.geminiBaseURL': 'API base URL',
-      'field.xiaoyunqueCommand': 'Xiaoyunque CLI command (pippit-tool-cli)',
-      'field.dreaminaCommand': 'Jimeng CLI command (dreamina)',
-      'field.xiaoyunqueModel': 'Xiaoyunque model key (from model list)',
-      'field.dreaminaModelVersion': 'Jimeng model_version',
+      'field.xiaoyunqueModel': 'Xiaoyunque model (auto-detected)',
+      'field.dreaminaModelVersion': 'Jimeng model (auto-detected)',
       'field.xiaoyunqueResolution': 'Xiaoyunque resolution',
       'field.dreaminaResolution': 'Jimeng resolution',
       'field.defaultRatio': 'Default ratio',
       'field.defaultSeconds': 'Default seconds',
       'field.downloadFolder': 'Default output folder',
+      'discover.title': 'CLI auto-detection',
+      'discover.refresh': 'Re-detect',
+      'discover.checking': 'Detecting…',
+      'discover.installed': 'Installed',
+      'discover.missing': 'Not installed',
+      'discover.path': 'Path',
+      'discover.models': 'Available models',
+      'discover.builtin': 'No CLI detected; showing the builtin model list. Install the CLI and press Re-detect to read models automatically.',
+      'discover.selectModel': 'Pick a model…',
       'field.preset': 'Storyboard rules (prompt)',
       'hint.preset': 'Write it as a storyboard artist brief; the Agent sends it as the system prompt.',
-      'hint.commands': 'Xiaoyunque = official Pippit CLI (pippit-tool-cli, npm i -g @pippit-dev/cli), run login once; Jimeng = official dreamina CLI, run login --headless once, generation requires an Advanced plan. Command name or absolute path.',
-      'hint.models': 'Find the Xiaoyunque model key with pippit-tool-cli model list; Jimeng takes a model_version such as seedance2.0mini / seedance2.0 / seedance2.5. Leave blank for defaults.',
+      'hint.commands': 'Paths are auto-detected (PATH, ~/.local/bin, npm global); no need to type them. Xiaoyunque = Pippit CLI (npm i -g @pippit-dev/cli, then pippit-tool-cli login); Jimeng = official dreamina CLI (curl https://jimeng.jianying.com/cli | bash, then dreamina login --headless; generation requires an Advanced plan).',
+      'hint.models': 'Models are read straight from the CLI (pippit-tool-cli model list / dreamina text2video -h); a builtin list is shown until the CLI is installed. Press Re-detect to refresh.',
       'hint.paths': 'Relative paths resolve against the current session workspace.',
       'tools.intro': 'Ask me to call these tools in the session; each is rooted at the current workspace:',
       'tools.storyboard': 'Turn a script into a storyboard and write it into the workspace',
@@ -151,6 +165,14 @@ window.__ModuleLoader__.load({
       .sd-tools{margin:0;padding-left:18px;font-size:12.5px;line-height:1.9;color:var(--dsw-alias-label-secondary)}
       .sd-tools code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11.5px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l1);border-radius:5px;padding:1px 5px;margin-right:6px}
       .sd-loading{display:flex;align-items:center;justify-content:center;min-height:220px;color:var(--dsw-alias-label-secondary);font-size:12.5px}
+      .sd-discover-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}
+      .sd-status-chip{display:inline-flex;align-items:center;gap:5px;font-size:11px;border-radius:999px;padding:2px 8px;border:1px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-secondary)}
+      .sd-status-chip[data-ok="true"]{color:#16a34a;border-color:rgba(34,197,94,.5);background:rgba(34,197,94,.08)}
+      .sd-status-chip[data-ok="false"]{color:#ef4444;border-color:rgba(239,68,68,.5);background:rgba(239,68,68,.08)}
+      .sd-cli-block{border-top:1px solid var(--dsw-alias-border-l1);margin-top:14px;padding-top:12px}
+      .sd-cli-block:first-of-type{border-top:none;margin-top:0;padding-top:0}
+      .sd-cli-name{font-size:12.5px;font-weight:600;margin-bottom:8px;display:flex;align-items:center;gap:8px}
+      .sd-path{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;color:var(--dsw-alias-label-secondary);word-break:break-all;margin:4px 0 8px}
     `
 
     /* --------------------------------------------------------------- helpers */
@@ -237,6 +259,37 @@ window.__ModuleLoader__.load({
       const [keySource, setKeySource] = useState('')
       const [error, setError] = useState('')
       const [note, setNote] = useState('')
+      const [discover, setDiscover] = useState(null)
+      const [discovering, setDiscovering] = useState(false)
+
+      const loadDiscover = useCallback(async (force) => {
+        setDiscovering(true)
+        try {
+          const data = await getJson(`/discover${force ? '?force=1' : ''}`)
+          setDiscover(data)
+          // Auto-select the first discovered model when the configured one is
+          // empty. Update both draft and config baseline so the panel does not
+          // show a false "unsaved changes" for a pure auto-selection.
+          setDraft((current) => {
+            if (!current) return current
+            let next = current
+            const xyqModels = (data.xiaoyunque && data.xiaoyunque.models) || []
+            const dmModels = (data.dreamina && data.dreamina.models) || []
+            if (xyqModels.length && !xyqModels.some((m) => m.value === current.xiaoyunqueModel)) {
+              next = { ...next, xiaoyunqueModel: xyqModels[0].value }
+            }
+            if (dmModels.length && !dmModels.some((m) => m.value === current.dreaminaModelVersion)) {
+              next = { ...next, dreaminaModelVersion: dmModels[0].value }
+            }
+            setConfig((baseline) => (baseline ? { ...baseline, xiaoyunqueModel: next.xiaoyunqueModel, dreaminaModelVersion: next.dreaminaModelVersion } : baseline))
+            return next
+          })
+        } catch (caught) {
+          setError(caught instanceof Error ? caught.message : String(caught))
+        } finally {
+          setDiscovering(false)
+        }
+      }, [])
 
       const load = useCallback(async () => {
         setLoading(true)
@@ -247,12 +300,15 @@ window.__ModuleLoader__.load({
           setDraft(data.config || null)
           setKeyConfigured(Boolean(data.keyConfigured))
           setKeySource(String(data.keySource || ''))
+          // Discover only after config is in place, so auto-selection is not
+          // overwritten by a late config response.
+          void loadDiscover(false)
         } catch (caught) {
           setError(caught instanceof Error ? caught.message : String(caught))
         } finally {
           setLoading(false)
         }
-      }, [])
+      }, [loadDiscover])
 
       useEffect(() => {
         void load()
@@ -309,6 +365,53 @@ window.__ModuleLoader__.load({
           options && options.hint ? h('div', { className: 'sd-hint' }, options.hint) : null,
         )
       }
+
+      function selectField(key, label, models) {
+        const value = draft ? draft[key] : ''
+        return h(
+          'div',
+          { key, className: 'sd-field' },
+          h('label', { className: 'sd-label', htmlFor: `sd-${key}` }, label),
+          h(
+            'select',
+            {
+              id: `sd-${key}`,
+              className: 'sd-select',
+              value: value === undefined || value === null ? '' : String(value),
+              disabled: readOnly || !models || models.length === 0,
+              onChange: (event) => patch(key, event.target.value),
+            },
+            h('option', { value: '' }, t('discover.selectModel')),
+            ...(models || []).map((m) => h('option', { key: m.value, value: m.value }, m.label || m.value)),
+          ),
+        )
+      }
+
+      function cliBlock(name, info, modelKey, resKey, resLabel) {
+        const installed = Boolean(info && info.path)
+        const models = (info && info.models) || []
+        return h(
+          'div',
+          { key: name, className: 'sd-cli-block' },
+          h(
+            'div',
+            { className: 'sd-cli-name' },
+            name,
+            h('span', { className: 'sd-status-chip', 'data-ok': installed ? 'true' : 'false' },
+              installed ? t('discover.installed') : t('discover.missing')),
+            info && info.version ? h('span', { className: 'sd-hint', style: { marginTop: 0 } }, `v${info.version}`) : null,
+          ),
+          h('div', { className: 'sd-path' },
+            `${t('discover.path')}: ${installed ? info.path : '—'}`),
+          selectField(modelKey, t('discover.models'), models),
+          field(resKey, resLabel),
+        )
+      }
+
+      const usingBuiltin = Boolean(
+        discover && ((discover.xiaoyunque && discover.xiaoyunque.source === 'builtin')
+          || (discover.dreamina && discover.dreamina.source === 'builtin')),
+      )
 
       return h(
         'div',
@@ -368,15 +471,21 @@ window.__ModuleLoader__.load({
                     h(
                       'div',
                       { className: 'sd-card' },
-                      h('div', { className: 'sd-card-title' }, t('section.cli')),
-                      field('xiaoyunqueCommand', t('field.xiaoyunqueCommand'), { hint: t('hint.commands') }),
-                      field('dreaminaCommand', t('field.dreaminaCommand')),
-                      field('xiaoyunqueModel', t('field.xiaoyunqueModel'), { hint: t('hint.models') }),
-                      field('dreaminaModelVersion', t('field.dreaminaModelVersion')),
-                      h('div', { className: 'sd-row' },
-                        field('xiaoyunqueResolution', t('field.xiaoyunqueResolution')),
-                        field('dreaminaResolution', t('field.dreaminaResolution')),
+                      h(
+                        'div',
+                        { className: 'sd-discover-head' },
+                        h('div', { className: 'sd-card-title', style: { marginBottom: 0 } }, t('discover.title')),
+                        h('button', {
+                          type: 'button', className: 'sd-button sd-ghost',
+                          disabled: discovering,
+                          onClick: () => { void loadDiscover(true) },
+                        }, discovering ? t('discover.checking') : t('discover.refresh')),
                       ),
+                      h('div', { className: 'sd-hint', style: { marginTop: 0, marginBottom: '10px' } }, t('hint.commands')),
+                      usingBuiltin ? h('div', { className: 'sd-error', style: { marginBottom: '12px' } }, t('discover.builtin')) : null,
+                      cliBlock('小云雀 / Pippit', discover && discover.xiaoyunque, 'xiaoyunqueModel', 'xiaoyunqueResolution', t('field.xiaoyunqueResolution')),
+                      cliBlock('即梦 / Dreamina', discover && discover.dreamina, 'dreaminaModelVersion', 'dreaminaResolution', t('field.dreaminaResolution')),
+                      h('div', { className: 'sd-hint' }, t('hint.models')),
                     ),
                     h(
                       'div',

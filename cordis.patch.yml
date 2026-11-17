@@ -8,18 +8,18 @@
         geminiModel: gemini-2.5-pro
         geminiApiKeyEnv: GEMINI_API_KEY
         geminiBaseURL: https://generativelanguage.googleapis.com/v1beta
-        # 两个官方出片 CLI（命令名或绝对路径）。
-        # 小云雀 = Pippit CLI：npm i -g @pippit-dev/cli，二进制名 pippit-tool-cli；
-        # 首次用 pippit-tool-cli login 登录，或设环境变量 XYQ_ACCESS_KEY。
-        # 即梦 = 官方 dreamina CLI：curl -fsSL https://jimeng.jianying.com/cli | bash；
-        # 首次用 dreamina login --headless 登录（仅高级会员可出片）。
+        # 两个官方出片 CLI。路径由插件自动探测（PATH、~/.local/bin、npm 全局目录），
+        # 这里不必填；下面两项仅作为自动探测失败时的兜底命令名。
+        # 小云雀 = Pippit CLI：npm i -g @pippit-dev/cli，二进制 pippit-tool-cli，首次 login。
+        # 即梦 = 官方 dreamina CLI：curl -fsSL https://jimeng.jianying.com/cli | bash，
+        #        首次 login --headless（出片需高级会员）。
         xiaoyunqueCommand: pippit-tool-cli
         dreaminaCommand: dreamina
         # 提交视频时的默认值，可在面板里逐单覆盖。
         defaultRatio: '9:16'
         defaultDuration: 5
-        # 出片模型。留空时小云雀会提示先跑 model list 取 key；
-        # 即梦默认 seedance2.0mini（可用：seedance2.0 / 2.0fast / 2.0mini / 2.5 等）。
+        # 出片模型由插件直接问 CLI（model list / -h）得到并在面板里下拉选择，
+        # 这里只是上次选中的值；留空则自动选列表里的第一个。
         xiaoyunqueModel: ''
         dreaminaModelVersion: seedance2.0mini
         # 分辨率：两者都支持 720p；即梦 seedance2.0_vip 才支持 1080p/4k。
