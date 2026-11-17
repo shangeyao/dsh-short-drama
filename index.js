@@ -17,12 +17,12 @@
 
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { access, createWriteStream } from 'node:fs'
+import { access, createWriteStream, readFileSync } from 'node:fs'
 import { copyFile, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import path from 'node:path'
 
-const VERSION = '1.5.0'
+const VERSION = '1.6.0'
 
 /** Prefix route owned by the configuration panel. */
 const ROUTE_PREFIX = '/short-drama/api'
@@ -44,6 +44,8 @@ const DEFAULTS = {
   xiaoyunqueResolution: '720p',
   dreaminaResolution: '720p',
   downloadFolder: 'generated-videos',
+  // 分镜词文件夹：storyboard_write 按序号把每个镜头写成 NNN.md 放这里。
+  storyboardFolder: 'storyboards',
   storyboardPreset: [
     '你是一位资深短剧分镜师。请把用户提供的剧本转换为可直接用于 AI 视频生成的分镜词列表。',
     '要求：',
@@ -69,6 +71,7 @@ const CONFIG_KEYS = [
   'xiaoyunqueResolution',
   'dreaminaResolution',
   'downloadFolder',
+  'storyboardFolder',
   'storyboardPreset',
   'assetExtensions',
 ]
@@ -537,6 +540,7 @@ export function apply(ctx, config = {}) {
     xiaoyunqueResolution: String(config.xiaoyunqueResolution || DEFAULTS.xiaoyunqueResolution),
     dreaminaResolution: String(config.dreaminaResolution || DEFAULTS.dreaminaResolution),
     downloadFolder: String(config.downloadFolder || DEFAULTS.downloadFolder),
+    storyboardFolder: String(config.storyboardFolder || DEFAULTS.storyboardFolder),
     storyboardPreset: String(config.storyboardPreset || DEFAULTS.storyboardPreset),
     assetExtensions: asList(config.assetExtensions, ['.png', '.jpg', '.jpeg', '.webp', '.mp4', '.mov', '.mp3', '.wav']),
   }
@@ -871,6 +875,92 @@ export function apply(ctx, config = {}) {
     return text
   }
 
+  /* --------------------------------------------------- storyboard pipeline */
+
+  /**
+   * Instruction appended to the user's rules so Gemini emits machine-splittable
+   * shots: one fenced block per shot, in order. The user's own rules still win
+   * on content; this only fixes the output framing.
+   */
+  const SPLIT_DIRECTIVE = [
+    '',
+    '【输出格式硬性要求】',
+    '把上面的规则应用到剧本后，按镜头顺序输出，每个镜头一段，段与段之间用单独一行 <<<SHOT>>> 分隔。',
+    '每段第一行必须是：## 镜头 N（N 从 1 开始连续递增）。其后是该镜头的完整分镜词。',
+    '不要输出 <<<SHOT>>> 以外的额外说明文字。',
+  ].join('\n')
+
+  /** Split Gemini's text into ordered shots. Tolerates several heading styles. */
+  function splitShots(text) {
+    const raw = String(text || '').trim()
+    if (!raw) return []
+    let parts = raw.split(/^\s*<<<SHOT>>>\s*$/imu).map((p) => p.trim()).filter(Boolean)
+    if (parts.length <= 1) {
+      // Fallback: split on shot headings when the delimiter was ignored.
+      parts = raw.split(/^\s*#{1,4}\s*镜头\s*\d+\s*$/imu).map((p) => p.trim()).filter(Boolean)
+    }
+    return parts.map((body, index) => {
+      // Use [ \t]* (not \s*) so the heading match never crosses a newline and
+      // swallow the first description line.
+      const heading = body.match(/^[ \t]*#{1,4}[ \t]*镜头[ \t]*(\d+)[ \t]*[：:]?[ \t]*[^\r\n]*(?:\r?\n|$)/imu)
+      const number = heading ? Number(heading[1]) : index + 1
+      // Strip only the heading line; keep all following description lines.
+      const content = heading ? body.slice(heading[0].length).trim() : body
+      return { number: Number.isFinite(number) && number > 0 ? number : index + 1, text: content || body }
+    }).filter((shot, index, array) => (
+      // de-duplicate a leading preamble fragment if Gemini emitted one
+      array.findIndex((s) => s.number === shot.number) === index
+    ))
+  }
+
+  /** Write an ordered shot list into the configured workspace storyboard folder. */
+  async function writeStoryboardSet(root, shots, script, folderArg) {
+    const folder = resolveIn(root, folderArg, settings.storyboardFolder)
+    const numbering = Math.max(3, String(shots.length).length)
+    const files = []
+    for (const shot of shots) {
+      const seq = String(shot.number).padStart(numbering, '0')
+      const name = `${seq}.md`
+      const file = path.join(folder, name)
+      const body = `# 镜头 ${shot.number}\n\n${shot.text}\n`
+      await writeFile(file, body, 'utf8')
+      files.push({ number: shot.number, file, name, relative: path.relative(root, file).split(path.sep).join('/') })
+    }
+    const manifest = {
+      version: 1,
+      createdAt: new Date().toISOString(),
+      folder: path.relative(root, folder).split(path.sep).join('/'),
+      count: files.length,
+      shots: files.map(({ number, name, relative }) => ({ number, file: name, path: relative })),
+    }
+    await writeFile(path.join(folder, 'index.json'), JSON.stringify(manifest, null, 2), 'utf8')
+    return { folder, manifest }
+  }
+
+  /** Find the storyboard folder + manifest inside a workspace. */
+  async function readStoryboardIndex(root, folderArg) {
+    const folder = resolveIn(root, folderArg, settings.storyboardFolder)
+    const indexFile = path.join(folder, 'index.json')
+    let manifest
+    try {
+      manifest = JSON.parse(await readFile(indexFile, 'utf8'))
+    } catch {
+      // Fall back to scanning NNN.md files when no manifest exists.
+      let names = []
+      try {
+        names = (await readdir(folder)).filter((n) => /^\d+\.md$/iu.test(n)).sort()
+      } catch {
+        throw new ToolError(`分镜文件夹不存在或没有 index.json：${folder}`)
+      }
+      manifest = {
+        version: 1, folder: path.relative(root, folder).split(path.sep).join('/'),
+        count: names.length,
+        shots: names.map((name) => ({ number: Number.parseInt(name, 10), file: name, path: path.relative(root, path.join(folder, name)).split(path.sep).join('/') })),
+      }
+    }
+    return { folder, manifest }
+  }
+
   /* ---------------------------------------------------------------- video */
 
   /**
@@ -1012,13 +1102,7 @@ export function apply(ctx, config = {}) {
       const result = parseCliJson(polled.tail)
       const genStatus = result?.gen_status || result?.data?.gen_status
       if (genStatus === 'success' || genStatus === 'succeed' || genStatus === 'completed') {
-        const produced = await newestVideo(item.outDir) || await newestMediaUrl(result, item.outDir, item.id)
-        store.update(item.id, {
-          status: produced ? 'succeeded' : 'completed',
-          stage: '', resultFile: produced || '',
-          resultName: produced ? path.basename(produced) : '',
-          error: produced ? '' : '生成成功，但未能定位输出文件（可查看 tail 中的下载地址）',
-        })
+        store.update(item.id, { stage: '整理成片…', ...(await finalizeResult(item, result)) })
         return
       }
       if (genStatus === 'fail' || genStatus === 'failed') {
@@ -1111,13 +1195,7 @@ export function apply(ctx, config = {}) {
       const result = parseCliJson(polled.tail)
       const state = String(result?.status || result?.run_state || result?.data?.status || '').toLowerCase()
       if (/^(succeeded|success|completed)$/iu.test(state)) {
-        const produced = await newestVideo(item.outDir) || await newestMediaUrl(result, item.outDir, item.id)
-        store.update(item.id, {
-          status: produced ? 'succeeded' : 'completed',
-          stage: '', resultFile: produced || '',
-          resultName: produced ? path.basename(produced) : '',
-          error: produced ? '' : '生成成功，但未能定位输出文件（可查看 tail 中的下载地址）',
-        })
+        store.update(item.id, { stage: '整理成片…', ...(await finalizeResult(item, result)) })
         return
       }
       if (/^(failed|fail|canceled|cancelled|interrupted)$/iu.test(state)) {
@@ -1221,6 +1299,27 @@ export function apply(ctx, config = {}) {
     }
   }
 
+  /**
+   * Resolve + name the finished video. When the task has a storyboard number,
+   * copy/rename the file to NNN.<ext> in the output folder so finished videos
+   * line up 1:1 with the numbered storyboards.
+   */
+  async function finalizeResult(item, result) {
+    const produced = await newestVideo(item.outDir) || await newestMediaUrl(result, item.outDir, item.id)
+    if (!produced) {
+      return { status: 'completed', resultFile: '', resultName: '', error: '生成成功，但未能定位输出文件（可查看 tail 中的下载地址）' }
+    }
+    let final = produced
+    if (item.number) {
+      const ext = path.extname(produced) || '.mp4'
+      const width = Math.max(3, String(item.number).length)
+      const name = `${String(item.number).padStart(width, '0')}${ext}`
+      final = path.join(item.outDir, name)
+      if (path.resolve(final) !== path.resolve(produced)) await copyFile(produced, final)
+    }
+    return { status: 'succeeded', resultFile: final, resultName: path.basename(final), error: '' }
+  }
+
   /* ----------------------------------------------------------- tools: core */
 
   /**
@@ -1239,27 +1338,45 @@ export function apply(ctx, config = {}) {
   register({
     name: 'storyboard_write',
     description:
-      '把剧本转换成短剧分镜词（分镜表），并按工作区相对路径写入一个 Markdown 文件。'
-      + '使用插件配置里可自定义的分镜规则；可传入 preset 覆盖本次规则。'
+      '把长剧本按分镜规则拆成一个个分镜词，按序号写入工作区的分镜文件夹（默认 storyboards/）：'
+      + '每个镜头一个 NNN.md（001.md、002.md…），并生成 index.json 清单。'
+      + '返回每镜头的序号与文件，供 video_submit 按 number 一一对应地生成视频。'
       + '所有路径相对于当前会话的工作目录。',
     parameters: {
-      script: { type: 'string', required: true, description: '完整剧本文本。' },
-      output: { type: 'string', description: '分镜词写出的 Markdown 文件名或相对路径，默认 storyboard.md。' },
+      script: { type: 'string', required: true, description: '完整剧本（可以很长）。' },
       preset: { type: 'string', description: '本次使用的分镜规则；省略则用插件配置的 storyboardPreset。' },
       model: { type: 'string', description: '覆盖本次使用的 Gemini 模型名。' },
+      folder: { type: 'string', description: '分镜输出文件夹，相对工作区；省略则用插件配置 storyboardFolder。' },
     },
     output: {
       schema: {
         type: 'object',
         additionalProperties: false,
-        required: ['path', 'storyboard', 'model'],
+        required: ['folder', 'count', 'shots', 'model', 'indexFile'],
         properties: {
-          path: { type: 'string' },
-          storyboard: { type: 'string' },
+          folder: { type: 'string' },
+          count: { type: 'integer' },
+          indexFile: { type: 'string' },
           model: { type: 'string' },
+          shots: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['number', 'file', 'preview'],
+              properties: {
+                number: { type: 'integer' },
+                file: { type: 'string' },
+                preview: { type: 'string' },
+              },
+            },
+          },
         },
       },
-      render: (_args, value) => TEXT(`已写入分镜词：${value.path}\n\n${value.storyboard}`),
+      render: (_args, value) => TEXT(
+        `已拆分并写入 ${value.count} 个分镜到 ${value.folder}\n`
+        + value.shots.map((s) => `  ${s.number} → ${s.file}`).join('\n'),
+      ),
     },
     async execute(args, exec) {
       const script = String(args.script || '').trim()
@@ -1271,11 +1388,74 @@ export function apply(ctx, config = {}) {
       }
       const root = await sessionRoot(exec.agent, exec.signal)
       const model = String(args.model || '').trim() || settings.geminiModel
-      const storyboard = await generateStoryboard(script, args.preset, model, credential.key)
-      const target = insideRoot(root, args.output ? (path.isAbsolute(args.output) ? args.output : path.join(root, args.output)) : path.join(root, 'storyboard.md'))
-      await mkdir(path.dirname(target), { recursive: true })
-      await writeFile(target, storyboard.endsWith('\n') ? storyboard : `${storyboard}\n`, 'utf8')
-      return { path: target, storyboard, model }
+      const baseRule = String(args.preset || '').trim() || settings.storyboardPreset
+      // Ask Gemini for ordered, machine-splittable shots.
+      const raw = await generateStoryboard(script, `${baseRule}${SPLIT_DIRECTIVE}`, model, credential.key)
+      let shots = splitShots(raw)
+      if (shots.length === 0) shots = [{ number: 1, text: raw }]
+      const folderArg = String(args.folder || '').trim()
+      const { folder, manifest } = await writeStoryboardSet(root, shots, script, folderArg)
+      return {
+        folder: path.relative(root, folder).split(path.sep).join('/'),
+        count: shots.length,
+        indexFile: path.relative(root, path.join(folder, 'index.json')).split(path.sep).join('/'),
+        model,
+        shots: manifest.shots.map((s) => ({
+          number: s.number, file: s.path,
+          preview: (() => {
+            try { return readFileSync(path.join(root, s.path), 'utf8').slice(0, 120) } catch { return '' }
+          })(),
+        })),
+      }
+    },
+  })
+
+  /* -- storyboard_list -------------------------------------------------- */
+
+  register({
+    name: 'storyboard_list',
+    description: '列出工作区分镜文件夹里已有的分镜（序号、文件）以及按序号生成的视频对应关系。只读。',
+    parameters: {
+      folder: { type: 'string', description: '分镜文件夹，相对工作区；省略则用插件配置 storyboardFolder。' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['folder', 'shots'],
+        properties: {
+          folder: { type: 'string' },
+          shots: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['number', 'file', 'video'],
+              properties: {
+                number: { type: 'integer' },
+                file: { type: 'string' },
+                video: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
+      render: (_args, value) => TEXT(value.shots.length
+        ? value.shots.map((s) => `- ${s.number}: ${s.file}${s.video ? ` → ${s.video}` : ''}`).join('\n')
+        : '没有找到分镜。'),
+    },
+    async execute(args, exec) {
+      const root = await sessionRoot(exec.agent, exec.signal)
+      const { folder, manifest } = await readStoryboardIndex(root, args.folder)
+      const shots = (manifest.shots || []).map((s) => {
+        // Find the most recent succeeded video tagged with this number.
+        const matched = store.list().find((item) => (
+          item.kind === 'video' && item.number === s.number
+          && (item.status === 'succeeded' || item.status === 'completed') && item.resultFile
+        ))
+        return { number: s.number, file: s.path, video: matched ? (matched.resultName || matched.resultFile) : '' }
+      }).sort((a, b) => a.number - b.number)
+      return { folder: path.relative(root, folder).split(path.sep).join('/'), shots }
     },
   })
 
@@ -1340,9 +1520,12 @@ export function apply(ctx, config = {}) {
     description:
       '用小云雀（Pippit / pippit-tool-cli）或即梦（dreamina CLI）的官方 CLI 提交视频生成任务，'
       + '返回任务 id 后可用 video_status 轮询。工具会按 CLI 的真实语法提交并自动查询、下载成片。'
-      + '任务在宿主后台运行，离开会话不会中断。输出目录与素材路径都相对于当前会话工作区。',
+      + '传 number 时按序号读取 storyboard_write 生成的分镜词作为提示词，成片也带同一序号，'
+      + '与分镜一一对应；也可直接传 prompt。任务在宿主后台运行，输出目录与素材路径都相对于当前会话工作区。',
     parameters: {
-      prompt: { type: 'string', required: true, description: '提示词或分镜词文本。' },
+      prompt: { type: 'string', description: '提示词或分镜词文本；与 number 二选一。' },
+      number: { type: 'integer', description: '分镜序号（从 1 开始）；提供后自动读取对应分镜文件作为提示词，无需再传 prompt。' },
+      storyboardFolder: { type: 'string', description: '分镜文件夹，相对工作区；省略则用插件配置 storyboardFolder。' },
       provider: { type: 'string', enum: ['xiaoyunque', 'dreamina'], description: '视频供应商，默认 xiaoyunque。' },
       assets: { type: 'array', items: { type: 'string' }, description: '要关联的素材相对路径，来自 short_drama_assets；图片会作为首帧，音频作为配音。' },
       ratio: { type: 'string', description: '画面比例，默认取插件配置 defaultRatio。' },
@@ -1366,10 +1549,22 @@ export function apply(ctx, config = {}) {
     },
     async execute(args, exec) {
       await store.ready
-      const prompt = String(args.prompt || '').trim()
-      if (!prompt) throw new ToolError('提示词 / 分镜词不能为空')
-      if (prompt.length > MAX_PROMPT) throw new ToolError('提示词过长')
       const root = await sessionRoot(exec.agent, exec.signal)
+      let prompt = String(args.prompt || '').trim()
+      let number = args.number === undefined || args.number === null || args.number === ''
+        ? null : asInt(args.number, 0, 1, 9999)
+      let storyboardFile = ''
+      if (number !== null) {
+        // Resolve the numbered storyboard inside the workspace.
+        const { folder, manifest } = await readStoryboardIndex(root, args.storyboardFolder)
+        const entry = (manifest.shots || []).find((s) => s.number === number)
+        if (!entry) throw new ToolError(`分镜 ${number} 不存在（共 ${manifest.count || 0} 个镜头）`)
+        const file = insideRoot(root, path.isAbsolute(entry.path) ? entry.path : path.join(root, entry.path))
+        prompt = (await readFile(file, 'utf8')).trim()
+        storyboardFile = path.relative(root, file).split(path.sep).join('/')
+      }
+      if (!prompt) throw new ToolError('提示词 / 分镜词不能为空')
+      if (prompt.length > MAX_PROMPT) prompt = prompt.slice(0, MAX_PROMPT)
       const outDir = resolveIn(root, args.outputDir, settings.downloadFolder)
       await mkdir(outDir, { recursive: true })
 
@@ -1383,6 +1578,8 @@ export function apply(ctx, config = {}) {
         status: 'queued',
         stage: '排队中…',
         provider,
+        number,
+        storyboardFile,
         prompt,
         model: String(args.model || '').trim(),
         ratio: String(args.ratio || '').trim() || settings.defaultRatio,
@@ -1425,7 +1622,7 @@ export function apply(ctx, config = {}) {
             items: {
               type: 'object',
               additionalProperties: false,
-              required: ['id', 'status', 'provider', 'stage', 'error', 'resultName', 'outDir', 'prompt'],
+              required: ['id', 'status', 'provider', 'stage', 'error', 'resultName', 'outDir', 'prompt', 'number'],
               properties: {
                 id: { type: 'string' },
                 status: { type: 'string' },
@@ -1435,6 +1632,7 @@ export function apply(ctx, config = {}) {
                 resultName: { type: 'string' },
                 outDir: { type: 'string' },
                 prompt: { type: 'string' },
+                number: { type: 'integer' },
               },
             },
           },
@@ -1443,7 +1641,7 @@ export function apply(ctx, config = {}) {
       render: (_args, value) => {
         if (value.items.length === 0) return TEXT('还没有视频任务。')
         return TEXT(value.items.map((item) => {
-          const bits = [`${item.id} · ${item.status} · ${item.provider}`]
+          const bits = [item.number ? `#${item.number}` : item.id, item.status, item.provider]
           if (item.stage) bits.push(item.stage)
           if (item.resultName) bits.push(item.resultName)
           if (item.error) bits.push(`错误：${item.error}`)
@@ -1468,6 +1666,7 @@ export function apply(ctx, config = {}) {
           resultName: item.resultName || '',
           outDir: item.outDir || '',
           prompt: item.prompt || '',
+          number: item.number || 0,
         })),
       }
     },
@@ -1558,6 +1757,7 @@ export function apply(ctx, config = {}) {
       xiaoyunqueResolution: settings.xiaoyunqueResolution,
       dreaminaResolution: settings.dreaminaResolution,
       downloadFolder: settings.downloadFolder,
+      storyboardFolder: settings.storyboardFolder,
       storyboardPreset: settings.storyboardPreset,
       assetExtensions: settings.assetExtensions,
       writable: typeof ctx.get('configEditor') === 'object',

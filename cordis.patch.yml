@@ -28,6 +28,9 @@
         dreaminaResolution: '720p'
         # 相对路径落在工作区内；绝对路径直接使用。
         downloadFolder: generated-videos
+        # 分镜词文件夹：storyboard_write 按序号写成 NNN.md + index.json，
+        # video_submit 用 number 参数与之一一对应。相对路径落在工作区内。
+        storyboardFolder: storyboards
         assetExtensions:
           - .png
           - .jpg

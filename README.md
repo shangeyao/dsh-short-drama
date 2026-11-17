@@ -41,27 +41,48 @@ dsh plugin add github:shangeyao/dsh-short-drama
 
 | 工具 | 作用 |
 |---|---|
-| `storyboard_write` | 按分镜规则把剧本转成分镜词，写入工作区的 Markdown 文件（默认 `storyboard.md`） |
+| `storyboard_write` | 把长剧本按规则拆成有序分镜词，按序号写成 `NNN.md`（001.md、002.md…）到分镜文件夹，并生成 `index.json` 清单 |
+| `storyboard_list` | 列出已有分镜（序号、文件）以及每个序号对应的成片，只读 |
 | `short_drama_assets` | 列出工作区里可用的人像图 / 音色 / 参考视频，可按类型过滤 |
-| `video_submit` | 用小云雀（Pippit）或即梦（dreamina）的**官方 CLI 真实语法**提交视频任务，自动轮询并将成片下载到工作区；立即返回任务 id |
+| `video_submit` | 传 `number` 时自动读取对应序号的分镜词作为提示词、成片也按该序号命名（001.mp4…），与分镜一一对应；也可直接传 `prompt`。用小云雀/即梦官方 CLI 真实语法提交，自动轮询下载 |
 | `video_status` | 查一个任务或列出最近任务 |
 | `video_download` | 把已完成的视频复制到工作区内指定目录 |
 | `video_cancel` | 取消排队中或运行中的任务 |
 
+### 按序号贯穿的流水线
+
+长剧本 → 分镜词 → 视频，全程用同一个序号对应：
+
+```text
+1) 按规则拆分长剧本
+→ storyboard_write(script=长剧本)
+   写出 分镜词/001.md、002.md… + index.json，返回每个镜头的序号和文件
+
+2) 看看拆成了哪些镜头
+→ storyboard_list()
+   001 → 002 → 003 …（以及各自已生成的视频）
+
+3) 按序号出片（自动读取该分镜词，成片命名 001.mp4）
+→ video_submit(number=1, ratio="9:16", seconds=5)
+→ video_submit(number=2, ...)
+
+4) 出好了吗？
+→ video_status()   （每项带 #序号，成片名也是该序号）
+```
+
+分镜文件夹可在左侧栏「分镜词文件夹」配置（默认 `storyboards`），全部落在当前会话工作区内。
+
 典型对话：
 
 ```text
-把这段剧本写成分镜词，存成 ep01.md
-→ storyboard_write(script=..., output="ep01.md")
+把这段剧本按我的规则拆成有序分镜，存进「分镜词」文件夹
+→ storyboard_write(script=..., folder="分镜词")
 
-工作区里有哪些人像素材？
-→ short_drama_assets(type="image")
+给第 3 个镜头出片
+→ video_submit(number=3)
 
-用分镜词出片，9:16，5 秒
-→ video_submit(prompt=..., ratio="9:16", seconds=5)
-
-出好了吗？好了就下载到 out/
-→ video_status() → video_download(id=..., targetDir="out")
+列出所有分镜和对应视频
+→ storyboard_list()
 ```
 
 ---
@@ -80,6 +101,7 @@ dsh plugin add github:shangeyao/dsh-short-drama
 | `dreaminaModelVersion` | 即梦模型（面板**下拉选择**，由 `text2video -h` 自动获取） | `seedance2.0mini` |
 | `xiaoyunqueResolution` / `dreaminaResolution` | 分辨率（下拉/可填） | `720p` / `720p` |
 | `defaultRatio` / `defaultDuration` | 提交默认比例与时长 | `9:16` / `5` |
+| `storyboardFolder` | 分镜词文件夹（按序号写 `NNN.md` + `index.json`） | `storyboards` |
 | `downloadFolder` | 默认输出目录 | `generated-videos` |
 | `assetExtensions` | 素材扫描扩展名 | 图片 / 视频 / 音频常见格式 |
 | `storyboardPreset` | 分镜规则（即系统提示词） | 内置中文分镜规范 |
