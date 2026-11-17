@@ -58,6 +58,17 @@ window.__ModuleLoader__.load({
       'discover.models': '可用模型',
       'discover.builtin': '未检测到 CLI，显示的是内置模型列表。装好 CLI 后点「重新检测」即可自动读取。',
       'discover.selectModel': '选择一个模型…',
+      'discover.login': '登录状态',
+      'discover.loggedIn': '已登录',
+      'discover.notLogged': '未登录',
+      'discover.expired': '凭据已过期',
+      'discover.advanced': '高级权限',
+      'discover.basic': '非高级',
+      'discover.loginHint': '用 pippit-tool-cli login / dreamina login --headless 登录；即梦出片需高级会员。',
+      'discover.update': '更新 CLI',
+      'discover.updating': '更新中…',
+      'discover.updateOk': 'CLI 已更新到最新版，模型列表已刷新。',
+      'discover.notInstalled': '尚未安装此 CLI，无法更新。请先按说明安装。',
       'field.preset': '分镜规则（即提示词）',
       'hint.preset': '写成分镜师的规范即可；Agent 生成分镜词时会把它作为系统提示词。',
       'hint.commands': '路径由插件自动探测（PATH、~/.local/bin、npm 全局目录），不用手填。小云雀 = Pippit CLI（npm i -g @pippit-dev/cli 后 pippit-tool-cli login）；即梦 = 官方 dreamina CLI（curl https://jimeng.jianying.com/cli | bash 后 dreamina login --headless，出片需高级会员）。',
@@ -111,6 +122,17 @@ window.__ModuleLoader__.load({
       'discover.models': 'Available models',
       'discover.builtin': 'No CLI detected; showing the builtin model list. Install the CLI and press Re-detect to read models automatically.',
       'discover.selectModel': 'Pick a model…',
+      'discover.login': 'Login status',
+      'discover.loggedIn': 'Logged in',
+      'discover.notLogged': 'Not logged in',
+      'discover.expired': 'Credential expired',
+      'discover.advanced': 'Advanced plan',
+      'discover.basic': 'Not advanced',
+      'discover.loginHint': 'Log in with pippit-tool-cli login / dreamina login --headless; Jimeng generation requires an Advanced plan.',
+      'discover.update': 'Update CLI',
+      'discover.updating': 'Updating…',
+      'discover.updateOk': 'CLI updated to the latest version; model list refreshed.',
+      'discover.notInstalled': 'This CLI is not installed yet. Install it first before updating.',
       'field.preset': 'Storyboard rules (prompt)',
       'hint.preset': 'Write it as a storyboard artist brief; the Agent sends it as the system prompt.',
       'hint.commands': 'Paths are auto-detected (PATH, ~/.local/bin, npm global); no need to type them. Xiaoyunque = Pippit CLI (npm i -g @pippit-dev/cli, then pippit-tool-cli login); Jimeng = official dreamina CLI (curl https://jimeng.jianying.com/cli | bash, then dreamina login --headless; generation requires an Advanced plan).',
@@ -261,6 +283,27 @@ window.__ModuleLoader__.load({
       const [note, setNote] = useState('')
       const [discover, setDiscover] = useState(null)
       const [discovering, setDiscovering] = useState(false)
+      const [updating, setUpdating] = useState('')
+
+      const onUpdateCli = useCallback(async (provider) => {
+        setUpdating(provider)
+        setError('')
+        setNote('')
+        try {
+          const data = await postJson('/update', { provider })
+          // Merge the freshly discovered info back into the panel.
+          setDiscover((current) => {
+            const next = current ? { ...current } : {}
+            next[provider] = data.info
+            return next
+          })
+          setNote(`${provider}: ${t('discover.updateOk')}`)
+        } catch (caught) {
+          setError(caught instanceof Error ? caught.message : String(caught))
+        } finally {
+          setUpdating('')
+        }
+      }, [t])
 
       const loadDiscover = useCallback(async (force) => {
         setDiscovering(true)
@@ -387,9 +430,22 @@ window.__ModuleLoader__.load({
         )
       }
 
-      function cliBlock(name, info, modelKey, resKey, resLabel) {
+      function cliBlock(name, info, modelKey, resKey, resLabel, provider) {
         const installed = Boolean(info && info.path)
         const models = (info && info.models) || []
+        const login = info && info.login
+        const loggedIn = Boolean(login && login.loggedIn)
+        let loginLabel = t('discover.notLogged')
+        if (login && login.expired) loginLabel = t('discover.expired')
+        else if (loggedIn) loginLabel = t('discover.loggedIn')
+        const advancedChip = login && login.advanced === true
+          ? h('span', { className: 'sd-status-chip', 'data-ok': 'true' }, t('discover.advanced'))
+          : (login && login.advanced === false
+            ? h('span', { className: 'sd-status-chip', 'data-ok': 'false' }, t('discover.basic'))
+            : null)
+        const loginDetail = login && login.detail
+          ? h('div', { className: 'sd-hint', style: { marginTop: 0 } }, login.detail)
+          : null
         return h(
           'div',
           { key: name, className: 'sd-cli-block' },
@@ -399,12 +455,27 @@ window.__ModuleLoader__.load({
             name,
             h('span', { className: 'sd-status-chip', 'data-ok': installed ? 'true' : 'false' },
               installed ? t('discover.installed') : t('discover.missing')),
+            installed ? h('span', { className: 'sd-status-chip', 'data-ok': loggedIn ? 'true' : 'false' }, loginLabel) : null,
+            advancedChip,
             info && info.version ? h('span', { className: 'sd-hint', style: { marginTop: 0 } }, `v${info.version}`) : null,
           ),
           h('div', { className: 'sd-path' },
             `${t('discover.path')}: ${installed ? info.path : '—'}`),
+          loginDetail,
           selectField(modelKey, t('discover.models'), models),
           field(resKey, resLabel),
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'sd-button sd-ghost',
+              style: { marginTop: '10px' },
+              disabled: !installed || updating !== '',
+              title: installed ? '' : t('discover.notInstalled'),
+              onClick: () => { void onUpdateCli(provider) },
+            },
+            updating === provider ? t('discover.updating') : t('discover.update'),
+          ),
         )
       }
 
@@ -483,8 +554,9 @@ window.__ModuleLoader__.load({
                       ),
                       h('div', { className: 'sd-hint', style: { marginTop: 0, marginBottom: '10px' } }, t('hint.commands')),
                       usingBuiltin ? h('div', { className: 'sd-error', style: { marginBottom: '12px' } }, t('discover.builtin')) : null,
-                      cliBlock('小云雀 / Pippit', discover && discover.xiaoyunque, 'xiaoyunqueModel', 'xiaoyunqueResolution', t('field.xiaoyunqueResolution')),
-                      cliBlock('即梦 / Dreamina', discover && discover.dreamina, 'dreaminaModelVersion', 'dreaminaResolution', t('field.dreaminaResolution')),
+                      cliBlock('小云雀 / Pippit', discover && discover.xiaoyunque, 'xiaoyunqueModel', 'xiaoyunqueResolution', t('field.xiaoyunqueResolution'), 'xiaoyunque'),
+                      cliBlock('即梦 / Dreamina', discover && discover.dreamina, 'dreaminaModelVersion', 'dreaminaResolution', t('field.dreaminaResolution'), 'dreamina'),
+                      h('div', { className: 'sd-hint' }, t('discover.loginHint')),
                       h('div', { className: 'sd-hint' }, t('hint.models')),
                     ),
                     h(

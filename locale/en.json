@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Short Drama Studio",
-    "description": "The sidebar is configuration only: storyboard rules, Gemini model, the Xiaoyunque (pippit-tool-cli) / Jimeng (dreamina) official CLIs and their models, and the download folder. Real work happens through agent tools (storyboard_write, short_drama_assets, video_submit, video_status, video_download, video_cancel) that submit with each CLI's real syntax, poll and download, all rooted at the current workspace."
+    "description": "The sidebar is configuration only: storyboard rules, Gemini model and download folder. The Xiaoyunque (pippit-tool-cli) / Jimeng (dreamina) CLIs are auto-detected, their models auto-listed, login status checked, and each can be updated from the panel. Real work happens through agent tools (storyboard_write, short_drama_assets, video_submit, video_status, video_download, video_cancel) that submit with each CLI's real syntax, poll and download, all rooted at the current workspace."
   }
 }

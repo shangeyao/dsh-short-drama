@@ -92,7 +92,16 @@ dsh plugin add github:shangeyao/dsh-short-drama
 
 插件直接调用两家**官方 CLI**，参数按各自真实语法生成，不是臆测的 `generate --output`。
 
-**模型不用手填。** 面板打开时插件会自动探测两个 CLI 装在哪（PATH、`~/.local/bin`、npm 全局目录），再直接问它们当前有哪些模型——小云雀跑 `pippit-tool-cli model list`，即梦读 `dreamina text2video -h` 里的 `model_version:` 行——列成下拉框给你选。改完 CLI 或重装后，点面板里的「重新检测」即可刷新。若没装 CLI，会显示一份内置模型清单兜底。
+**模型不用手填。** 面板打开时插件会自动探测两个 CLI 装在哪（PATH、`~/.local/bin`、npm 全局目录），再直接问它们当前有哪些模型——小云雀跑 `pippit-tool-cli model list`，即梦读 `dreamina text2video -h` 里的 `model_version:` 行——列成下拉框给你选。若没装 CLI，会显示一份内置模型清单兜底。
+
+**登录状态也能看。** 检测时插件会顺带查登录态：小云雀跑 `pippit-tool-cli status`（`logged_in` / `source` / `expires_at`），即梦跑 `dreamina user_credit`（`user_name` / `vip_level` / `total_credit` / `has_cli_permission`）。面板上每个 CLI 都有「已登录 / 未登录」徽章，即梦还会显示是否高级会员。
+
+**CLI 可以在配置面板里直接更新。** 每个 CLI 卡片下方的「更新 CLI」按钮：
+
+- 小云雀 → 跑官方自更新 `pippit-tool-cli update`（内部 `npm install -g @pippit-dev/cli@latest`）
+- 即梦 → 官方**没有** `update` 子命令，正确做法是重跑安装脚本；插件会找到 Git Bash 并执行 `curl -fsSL https://jimeng.jianying.com/cli | bash` 覆盖安装
+
+更新完插件自动重新探测、刷新模型列表。改完 CLI 或重装后也可以点顶部的「重新检测」。
 
 ### 小云雀（Pippit，`pippit-tool-cli`）
 

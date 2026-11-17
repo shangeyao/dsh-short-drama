@@ -22,7 +22,7 @@ import { copyFile, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/pro
 import { homedir } from 'node:os'
 import path from 'node:path'
 
-const VERSION = '1.3.0'
+const VERSION = '1.4.0'
 
 /** Prefix route owned by the configuration panel. */
 const ROUTE_PREFIX = '/short-drama/api'
@@ -200,6 +200,64 @@ function parseXiaoyunqueModels(text) {
   return raw.split(/\r?\n/u).map((line) => line.trim())
     .filter((line) => /^[A-Za-z0-9][A-Za-z0-9._-]{2,}$/u.test(line))
     .map((value) => ({ value, label: value }))
+}
+
+/** Extract the last JSON object from mixed CLI output. Module-level helper. */
+function lastJsonObject(raw) {
+  const trimmed = String(raw || '').trim()
+  if (!trimmed) return null
+  try { return JSON.parse(trimmed) } catch { /* mixed with logs */ }
+  const lines = trimmed.split(/\r?\n/u).map((line) => line.trim()).filter((line) => /^[{[]/u.test(line))
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    try { return JSON.parse(lines[i]) } catch { /* keep looking */ }
+  }
+  const first = trimmed.indexOf('{')
+  const last = trimmed.lastIndexOf('}')
+  if (first !== -1 && last > first) {
+    try { return JSON.parse(trimmed.slice(first, last + 1)) } catch { /* none */ }
+  }
+  return null
+}
+
+/**
+ * Normalize the login/status check of both CLIs into one shape:
+ * { loggedIn, source, detail, expired, advanced }.
+ * - Pippit: `status` -> { logged_in, source, expires_at }
+ * - Dreamina: `user_credit` -> { has_cli_permission, vip_level, total_credit, user_name }
+ */
+function parseLoginStatus(provider, raw) {
+  const json = lastJsonObject(raw)
+  const text = String(raw || '')
+  if (provider === 'xiaoyunque') {
+    if (!json) {
+      return { loggedIn: false, source: '', detail: text.slice(-160).trim(), expired: false, advanced: null }
+    }
+    const expiresAt = json.expires_at ? Date.parse(json.expires_at) : NaN
+    const expired = Number.isFinite(expiresAt) && expiresAt < Date.now()
+    return {
+      loggedIn: Boolean(json.logged_in) && !expired,
+      source: String(json.source || ''),
+      detail: json.uid ? `uid: ${json.uid}` : '',
+      expired,
+      advanced: null,
+    }
+  }
+  // dreamina
+  if (!json) {
+    const notLogged = /not logged in|login expired|login pending|cached user_info is empty|unauthori[sz]ed/iu.test(text)
+    return { loggedIn: false, source: '', detail: text.slice(-160).trim(), expired: false, advanced: false, notLogged }
+  }
+  const hasCli = json.has_cli_permission
+  const vip = String(json.vip_level || '')
+  const loggedIn = Boolean(json.user_name) || hasCli === true || json.total_credit !== undefined
+  return {
+    loggedIn,
+    source: 'account',
+    detail: [json.user_name ? `用户 ${json.user_name}` : '', vip ? `等级 ${vip}` : '',
+      typeof json.total_credit === 'number' ? `积分 ${json.total_credit}` : ''].filter(Boolean).join(' · '),
+    expired: false,
+    advanced: typeof hasCli === 'boolean' ? hasCli : (vip ? /vip|pro|premium|高级/iu.test(vip) : null),
+  }
 }
 
 /** Short bounded probe used only for discovery (no task record involved). */
@@ -534,12 +592,18 @@ export function apply(ctx, config = {}) {
       ]
       const xyq = await detectCli([...new Set(xyqCandidates)])
       if (xyq) {
-        const probe = await runProbe(xyq.path, ['model', 'list'])
-        let models = parseXiaoyunqueModels(probe.text)
+        const [modelProbe, statusProbe] = await Promise.all([
+          runProbe(xyq.path, ['model', 'list']),
+          runProbe(xyq.path, ['status']),
+        ])
+        let models = parseXiaoyunqueModels(modelProbe.text)
         if (!models.length) models = KNOWN_MODELS.xiaoyunque
-        out.xiaoyunque = { ...xyq, models, source: probe.code === 0 ? 'cli' : 'builtin' }
+        out.xiaoyunque = {
+          ...xyq, models, source: modelProbe.code === 0 ? 'cli' : 'builtin',
+          login: parseLoginStatus('xiaoyunque', statusProbe.text),
+        }
       } else {
-        out.xiaoyunque = { path: '', version: '', models: KNOWN_MODELS.xiaoyunque, source: 'builtin', installed: false }
+        out.xiaoyunque = { path: '', version: '', models: KNOWN_MODELS.xiaoyunque, source: 'builtin', installed: false, login: null }
       }
 
       // --- Dreamina CLI ---
@@ -550,12 +614,18 @@ export function apply(ctx, config = {}) {
       ]
       const dreamina = await detectCli([...new Set(dreaminaCandidates)])
       if (dreamina) {
-        const probe = await runProbe(dreamina.path, ['text2video', '-h'])
-        let models = parseDreaminaModels(probe.text)
+        const [modelProbe, statusProbe] = await Promise.all([
+          runProbe(dreamina.path, ['text2video', '-h']),
+          runProbe(dreamina.path, ['user_credit']),
+        ])
+        let models = parseDreaminaModels(modelProbe.text)
         if (!models.length) models = KNOWN_MODELS.dreamina
-        out.dreamina = { ...dreamina, models, source: probe.code === 0 ? 'cli' : 'builtin' }
+        out.dreamina = {
+          ...dreamina, models, source: modelProbe.code === 0 ? 'cli' : 'builtin',
+          login: parseLoginStatus('dreamina', statusProbe.text),
+        }
       } else {
-        out.dreamina = { path: '', version: '', models: KNOWN_MODELS.dreamina, source: 'builtin', installed: false }
+        out.dreamina = { path: '', version: '', models: KNOWN_MODELS.dreamina, source: 'builtin', installed: false, login: null }
       }
 
       discoveryCache = out
@@ -570,6 +640,99 @@ export function apply(ctx, config = {}) {
     const found = provider === 'dreamina' ? info.dreamina : info.xiaoyunque
     if (found && found.path) return found.path
     return provider === 'dreamina' ? settings.dreaminaCommand : settings.xiaoyunqueCommand
+  }
+
+  /**
+   * Update a CLI to the latest official release, then re-probe it.
+   *
+   * - Xiaoyunque/Pippit has a real self-update: `pippit-tool-cli update`
+   *   (installs @pippit-dev/cli@latest via npm).
+   * - Dreamina has NO update subcommand; the official way is to re-run its
+   *   install script. On Windows that script needs a bash (Git Bash/MSYS), so
+   *   we locate one and run `curl -fsSL https://jimeng.jianying.com/cli | bash`.
+   *
+   * Only fixed, official commands are run — no user-supplied command strings.
+   */
+  async function updateCli(provider) {
+    const kind = provider === 'dreamina' ? 'dreamina' : 'xiaoyunque'
+    let command
+    let args
+    let shell = process.platform === 'win32'
+    let output = ''
+
+    if (kind === 'xiaoyunque') {
+      const info = await discover(true)
+      command = (info.xiaoyunque && info.xiaoyunque.path) || settings.xiaoyunqueCommand
+      args = ['update']
+    } else {
+      // Dreamina: re-run the official installer. Prefer a real Git Bash over
+      // the WindowsApps `bash.exe` stub, which opens the Store instead of
+      // running commands.
+      let bashPath = ''
+      if (process.platform === 'win32') {
+        const candidates = [
+          'D:\\Git\\usr\\bin\\bash.exe',
+          'C:\\Program Files\\Git\\usr\\bin\\bash.exe',
+          'C:\\Program Files (x86)\\Git\\usr\\bin\\bash.exe',
+          path.join(process.env.ProgramFiles || '', 'Git', 'usr', 'bin', 'bash.exe'),
+        ]
+        for (const candidate of candidates) {
+          if (!candidate) continue
+          try {
+            await access(candidate)
+            const probe = await runProbe(candidate, ['--version'])
+            if (probe.code === 0 && /gnu bash/iu.test(probe.text)) { bashPath = candidate; break }
+          } catch { /* try next */ }
+        }
+      }
+      if (bashPath) {
+        command = bashPath
+        args = ['-lc', 'curl -fsSL https://jimeng.jianying.com/cli | bash']
+        shell = false
+      } else if (process.platform !== 'win32') {
+        command = 'bash'
+        args = ['-lc', 'curl -fsSL https://jimeng.jianying.com/cli | bash']
+        shell = false
+      } else {
+        throw new ToolError('未找到 bash（Git Bash / MSYS）：即梦的官方更新需要重跑安装脚本，请在 Git Bash 里执行 curl -fsSL https://jimeng.jianying.com/cli | bash')
+      }
+    }
+
+    const result = await runProbeTimeout(command, args, shell, 5 * 60 * 1000)
+    output = (result.text || '').slice(-4000)
+    if (result.code !== 0) {
+      throw new ToolError(`更新 ${kind} CLI 失败（退出码 ${result.code}）：${output || '无输出'}`)
+    }
+    // Drop caches so the next discovery reflects the new binary.
+    discoveryCache = null
+    const fresh = await discover(true)
+    return { ok: true, provider: kind, output, info: fresh[kind] }
+  }
+
+  /** runProbe with a configurable timeout, used by the update route. */
+  function runProbeTimeout(command, args, shell, timeoutMs) {
+    return new Promise((resolve) => {
+      let child
+      try {
+        child = spawn(command, args, {
+          env: { ...process.env, PIPPIT_CLI_DISABLE_TELEMETRY: '1' },
+          stdio: ['ignore', 'pipe', 'pipe'],
+          windowsHide: true,
+          shell,
+        })
+      } catch (error) {
+        resolve({ code: -1, text: messageOf(error) })
+        return
+      }
+      let text = ''
+      child.stdout?.setEncoding('utf8')
+      child.stderr?.setEncoding('utf8')
+      child.stdout?.on('data', (chunk) => { text = (text + chunk).slice(-8000) })
+      child.stderr?.on('data', (chunk) => { text = (text + chunk).slice(-8000) })
+      const timer = setTimeout(() => { try { child.kill('SIGTERM') } catch {} }, timeoutMs)
+      child.once('error', () => { clearTimeout(timer); resolve({ code: -1, text }) })
+      child.once('close', (code) => { clearTimeout(timer); resolve({ code: code === null ? -1 : code, text }) })
+    })
   }
 
   /* --------------------------------------------------------------- gemini */
@@ -1362,6 +1525,15 @@ export function apply(ctx, config = {}) {
             if (rest === '/discover') {
               const force = url.searchParams.get('force') === '1'
               sendJson(res, 200, { ok: true, ...(await discover(force)) })
+              return
+            }
+            if (rest === '/update' && (req.method || 'GET') === 'POST') {
+              const body = await readJson(req)
+              const provider = String(body && body.provider || '')
+              if (provider !== 'xiaoyunque' && provider !== 'dreamina') {
+                throw new HttpError(400, 'provider 必须是 xiaoyunque 或 dreamina')
+              }
+              sendJson(res, 200, await updateCli(provider))
               return
             }
             throw new HttpError(404, '未知接口')
