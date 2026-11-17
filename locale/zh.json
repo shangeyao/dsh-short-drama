@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "短剧工坊",
-    "description": "在侧边栏面板里，用可自定义的分镜词规则把剧本变成分镜表，再调用小云雀 / Dreamina 的 CLI 出片；自动关联工作区里的人像、音色与视频素材，任务在宿主后台排队，关掉页面也不中断。"
+    "description": "左侧栏只做配置：分镜词规则、Gemini 模型、两个出片 CLI 与下载目录。真正的操作是会话里的 Agent 工具（storyboard_write / short_drama_assets / video_submit / video_status / video_download / video_cancel），全部以当前工作区为根执行。"
   }
 }

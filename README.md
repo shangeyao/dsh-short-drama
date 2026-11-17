@@ -1,6 +1,6 @@
 # dsh-short-drama · 短剧工坊
 
-**在 DeepSeek Harness 侧边栏里，把剧本变成分镜词，再交给小云雀 / Dreamina 的 CLI 出片。任务跑在宿主进程，关掉页面也不中断。**
+**左侧栏只管配置，真正的活由会话里的 Agent 工具在**你当前的工作区**里干完。**
 
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![dsh](https://img.shields.io/badge/dsh-%E2%89%A50.2.1--rc.3-4B6BFB)](https://github.com/deepseek-ai)
@@ -18,52 +18,57 @@ dsh plugin add github:shangeyao/dsh-short-drama
 
 > 桌面版请在应用内「设置 → 插件 → 添加插件」里选择本仓库目录；CLI 在应用运行时不会改动桌面版的 profile。
 
-安装后在「设置 → 插件」确认 `dsh-short-drama` 已启用，左侧栏即出现「短剧工坊」图标。
+安装后在「设置 → 插件」确认 `dsh-short-drama` 已启用，左侧栏即出现「短剧工坊·配置」图标。
 
 ---
 
-## 它解决什么问题
+## 职责划分
 
-DeepSeek Harness 的模型调用走 `POST /v1/chat/completions`，而短剧工作流需要两件它不管的事：
+这个插件刻意拆成两半，不要混用：
 
-| 能力 | 由谁负责 |
+| 面 | 负责 | 不负责 |
+|---|---|---|
+| **左侧栏面板** | 改配置：Gemini 模型 / Key 来源、两个 CLI 命令、默认比例时长、下载目录、分镜规则；读写 profile 的 `cordis.patch.yml` | 不发起任何生成 |
+| **Agent 工具** | 生成分镜词、扫素材、提交视频、查进度、下载、取消 | 不改配置 |
+
+这样做的原因：生成要落在**当前会话的工作区**里。面板是全局的，它不知道你此刻在哪个项目；而工具拿到 `exec.agent`，能精确解析出该会话的工作目录。
+
+---
+
+## 工具清单
+
+在会话里直接让我调用，路径全部相对于当前工作目录，且被限制在工作区内（越界会被拒绝）：
+
+| 工具 | 作用 |
 |---|---|
-| 剧本 → 分镜词 | 宿主进程调用 Gemini `generateContent`，按你写的分镜规则出 Markdown 分镜表 |
-| 分镜词 → 视频 | 宿主进程调起 `xiaoyunque` / `dreamina` CLI，产出视频文件 |
-| 结果落盘 | 宿主进程写进工作区目录，浏览器全程接触不到 API Key |
+| `storyboard_write` | 按分镜规则把剧本转成分镜词，写入工作区的 Markdown 文件（默认 `storyboard.md`） |
+| `short_drama_assets` | 列出工作区里可用的人像图 / 音色 / 参考视频，可按类型过滤 |
+| `video_submit` | 用小云雀或 Dreamina 的 CLI 提交视频任务，立即返回任务 id；后台继续跑 |
+| `video_status` | 查一个任务或列出最近任务 |
+| `video_download` | 把已完成的视频复制到工作区内指定目录 |
+| `video_cancel` | 取消排队中或运行中的任务 |
 
-这些都不在 chat 协议里。本插件由**宿主进程**直接完成，并通过一条前缀路由 `/short-drama/api/...` 给面板提供 JSON 接口。
+典型对话：
 
----
+```text
+把这段剧本写成分镜词，存成 ep01.md
+→ storyboard_write(script=..., output="ep01.md")
 
-## 界面
+工作区里有哪些人像素材？
+→ short_drama_assets(type="image")
 
-左侧栏独立入口，顶部三个页签：
+用分镜词出片，9:16，5 秒
+→ video_submit(prompt=..., ratio="9:16", seconds=5)
 
-| 页签 | 用途 |
-|---|---|
-| **分镜词** | 左栏粘贴剧本、编辑分镜规则（规则本身就是提示词，可随时改），右侧显示分镜表结果；下方是工作区资产选择 |
-| **视频任务** | 供应商 / 比例 / 时长 / 模型 / 提示词 / 下载目录，提交后在右侧任务历史里看进度、下载、取消、删除 |
-| **设置** | 只读展示当前生效的模型、CLI 命令、默认值与分镜规则 |
-
-顶部徽标显示 Gemini Key 是否就绪（`Key 已就绪` / `Key 未配置`）与当前模型名，`重新检测` 立即刷新。
-
----
-
-## 使用流程
-
-1. **配置 Key**：在「设置 → 模型」里配置 google / Gemini 供应商，或在宿主环境里设置 `GEMINI_API_KEY`（也可写进 DSH 凭据）。顶部徽标变绿即就绪。
-2. **写规则**：默认规则在 `cordis.patch.yml` 的 `storyboardPreset` 里，也可以在「分镜词」页签直接编辑——面板提交时会带上你当前编辑的版本。
-3. **生成分镜词**：粘贴剧本 → 生成分镜词。结果会自动带入「视频任务」的提示词框（若提示词框为空）。
-4. **挑资产**：在「分镜词」页签下方勾选工作区里的人物图、音色、参考视频，会作为 `--asset` 传给 CLI。
-5. **出片**：切到「视频任务」，选供应商、比例、时长，提交。任务立刻返回，在宿主后台跑。
-6. **下载**：任务完成后点「下载」，文件落到你填的下载目录（相对路径按工作区解析，留空则用 `downloadFolder`）。
+出好了吗？好了就下载到 out/
+→ video_status() → video_download(id=..., targetDir="out")
+```
 
 ---
 
 ## 配置项
 
-插件行配置位于 `cordis.patch.yml`：
+左侧栏可改，也可直接编辑 profile 的 `cordis.patch.yml`：
 
 | 字段 | 说明 | 默认 |
 |---|---|---|
@@ -72,11 +77,13 @@ DeepSeek Harness 的模型调用走 `POST /v1/chat/completions`，而短剧工�
 | `geminiBaseURL` | Gemini API 基址 | `https://generativelanguage.googleapis.com/v1beta` |
 | `xiaoyunqueCommand` / `dreaminaCommand` | 两个 CLI 命令名或绝对路径 | `xiaoyunque` / `dreamina` |
 | `defaultRatio` / `defaultDuration` | 提交默认比例与时长 | `9:16` / `5` |
-| `downloadFolder` | 默认下载文件夹 | `generated-videos` |
-| `assetExtensions` | 扫描哪些扩展名 | 图片 / 视频 / 音频常见格式 |
-| `storyboardPreset` | 分镜词规则（即提示词） | 内置中文分镜规范 |
+| `downloadFolder` | 默认输出目录 | `generated-videos` |
+| `assetExtensions` | 素材扫描扩展名 | 图片 / 视频 / 音频常见格式 |
+| `storyboardPreset` | 分镜规则（即系统提示词） | 内置中文分镜规范 |
 
-数据落在 `<DSH home>/short-drama/history.json`，重启后历史仍在；重启时仍在「生成中」的任务会被标记为失败（进程已不存在），不会无限轮询。
+配置改完点「保存配置」，会写回 profile；**重启插件后生效**。
+
+任务历史落在 `<DSH home>/short-drama/history.json`，重启后仍在；重启时仍在「生成中」的任务会被标记为失败（进程已不存在），不会无限轮询。
 
 ---
 
@@ -84,18 +91,16 @@ DeepSeek Harness 的模型调用走 `POST /v1/chat/completions`，而短剧工�
 
 | 文件 | 职责 |
 |---|---|
-| `index.js` | 宿主半端：用 `ctx.webServer.register({ kind: 'prefix' })` 挂 `/short-drama/api`，负责 Gemini 调用、CLI 执行、资产扫描、下载与历史存储 |
-| `client.js` | 浏览器半端：注册 `sidebar.panellist` 图标与 `main` 面板；单文件内联样式与中英词典，只用 `fetch` 打自己的前缀路由 |
+| `index.js` | 宿主半端：注册 6 个 Agent 工具；挂 `/short-drama/api` 只提供配置读写；负责 Gemini 调用、CLI 执行、素材扫描、下载与历史存储 |
+| `client.js` | 浏览器半端：注册 `sidebar.panellist` 图标与 `main` 面板，**只做配置表单**；单文件内联样式与中英词典 |
 | `cordis.patch.yml` | 插件注册行与默认配置 |
 | `locale/` | 插件管理页展示用标题与描述 |
-| `icon.svg` | 侧边栏图标 |
+| `icon.svg` | 侧边栏图标（齿轮，表明这是配置入口） |
 
 两条设计约束：
 
-- **任务归宿主所有。** 面板只做「提交 + 读历史」，`setInterval` 只轮询历史。所以切页签、刷新、关页面都不会丢任务。
+- **操作归会话。** 每个工具都用 `ctx.workingDirectory.ensure(exec.agent)` 取当前会话目录，再用 `insideRoot()` 拒绝越界路径。所以素材、产物、下载都留在你正在做的项目里。
 - **浏览器不碰密钥。** Key 只在 `index.js` 里读取并直接发给 Gemini，面板拿到的只有「是否已配置」和来源。
-
-输出目录按「工作区根 + 目标」解析：填相对路径就落在工作区内，填绝对路径就直接用；留空则用 `downloadFolder`。
 
 ---
 
