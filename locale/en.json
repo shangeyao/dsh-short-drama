@@ -1,7 +1,6 @@
 {
   "meta": {
     "title": "Short Drama Studio",
-    "description": "Left-sidebar workbench that turns a script into storyboard panels with Gemini using editable preset rules, then generates videos through the Xiaoyunque and Dreamina CLIs. It links workspace assets (images, voices, videos), sets ratio/duration/model, tracks jobs, and downloads finished videos into a chosen project folder. Requires a configured Gemini provider or GEMINI_API_KEY, and both CLIs on PATH.",
-    "detail": "docs/DETAIL.md"
+    "description": "Turn a script into storyboard panels with your own storyboard rules, then render video through the Xiaoyunque or Dreamina CLI. Links portraits, voices and clips from the workspace, and keeps every task running in the Host so closing the page never interrupts it."
   }
 }

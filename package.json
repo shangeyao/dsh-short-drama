@@ -1,9 +1,40 @@
 {
-  "name": "@local/dsh-short-drama",
+  "name": "dsh-short-drama",
   "version": "1.0.0",
-  "private": true,
+  "description": "DeepSeek Harness 侧边栏短剧工坊：用 Gemini 按可自定义规则生成分镜词，再通过小云雀 / Dreamina CLI 生成视频。",
   "type": "module",
-  "description": "短剧分镜词生成与视频生成工作台：Gemini 分镜词、小云雀/Dreamina CLI 视频。",
+  "license": "MIT",
+  "author": "shangeyao",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "short-drama",
+    "storyboard",
+    "gemini",
+    "video-generation",
+    "sidebar-panel"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/shangeyao/dsh-short-drama.git"
+  },
+  "homepage": "https://github.com/shangeyao/dsh-short-drama#readme",
+  "bugs": {
+    "url": "https://github.com/shangeyao/dsh-short-drama/issues"
+  },
+  "engines": {
+    "node": ">=20",
+    "dsh": ">=0.2.1-rc.3"
+  },
+  "scripts": {
+    "check": "node --check index.js && node --check client.js",
+    "prepack": "npm run check"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
@@ -15,20 +46,9 @@
     "client.js",
     "cordis.patch.yml",
     "locale/*.json",
-    "docs",
     "icon.svg",
-    "README.md",
     "LICENSE"
   ],
-  "peerDependencies": {
-    "@deepseek-ai/cordis": "~4.1.0",
-    "@deepseek-ai/dsh-typert-protocol": "0.2.2-rc.3",
-    "@deepseek-ai/dsh-llm": "0.2.2-rc.3",
-    "@deepseek-ai/dsh-subprocess": "0.2.2-rc.3",
-    "@deepseek-ai/dsh-working-directory": "0.2.2-rc.3",
-    "@deepseek-ai/dsh-workspace": "0.2.2-rc.3",
-    "@deepseek-ai/dsh-credentials": "0.2.2-rc.3"
-  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
@@ -37,11 +57,7 @@
       "platform": "web",
       "immediately": true,
       "inject": [
-        "@deepseek-ai/dsh-api-remotes",
-        "@deepseek-ai/dsh-client-locale",
-        "@deepseek-ai/dsh-client-ui-layout",
-        "@deepseek-ai/dsh-client-ui-sidebar",
-        "@deepseek-ai/dsh-client-ui-workspace"
+        "@deepseek-ai/dsh-client-locale"
       ]
     }
   }

@@ -1,21 +1,21 @@
 - insert:
-    - id: dsh-short-drama
-      name: '@local/dsh-short-drama'
+    - id: short-drama
+      name: 'dsh-short-drama'
       config:
+        # Gemini 供应商模型名与 Key 的读取位置。Key 只留在宿主进程，
+        # 浏览器永远拿不到它；也可在 DSH「设置 → 模型」里配置 google。
         geminiProvider: google
         geminiModel: gemini-2.5-pro
-        geminiApiKeyRef: GEMINI_API_KEY
-        geminiTemperature: 0.7
-        storyboardPreset: |
-          你是一位资深短剧分镜师。请把用户提供的剧本转换为分镜词列表。
-          要求：
-          1. 按镜头顺序输出，每个镜头包含：镜头编号、景别、画面描述、台词/旁白、时长(秒)、情绪/氛围、所需资产(人物/音色/视频)、备注。
-          2. 画面描述要具体、可视化，便于直接用于 AI 视频生成。
-          3. 时长总和应与剧本长度匹配，单镜头不超过 15 秒。
-          4. 使用 Markdown 表格输出，表头固定为：镜头 | 景别 | 画面 | 台词 | 时长 | 资产 | 备注。
-          5. 只输出表格，不要输出解释文字。
+        geminiApiKeyEnv: GEMINI_API_KEY
+        geminiBaseURL: https://generativelanguage.googleapis.com/v1beta
+        # 两个出片 CLI。命令名或绝对路径，面板不会猜测参数格式。
         xiaoyunqueCommand: xiaoyunque
         dreaminaCommand: dreamina
+        # 提交视频时的默认值，可在面板里逐单覆盖。
+        defaultRatio: '9:16'
+        defaultDuration: 5
+        # 相对路径落在工作区内；绝对路径直接使用。
+        downloadFolder: generated-videos
         assetExtensions:
           - .png
           - .jpg
@@ -25,6 +25,12 @@
           - .mov
           - .mp3
           - .wav
-        defaultRatio: '9:16'
-        defaultDuration: 5
-        downloadFolder: generated-videos
+        # 分镜词规则：改写这一段即可让面板按你的分镜规范输出。
+        storyboardPreset: |
+          你是一位资深短剧分镜师。请把用户提供的剧本转换为可直接用于 AI 视频生成的分镜词列表。
+          要求：
+          1. 按镜头顺序输出，每个镜头包含：镜头编号、景别、画面描述、台词/旁白、时长(秒)、情绪氛围、所需资产、备注。
+          2. 画面描述必须具体、可视化，写清主体、动作、运镜、光线与氛围。
+          3. 单镜头不超过 15 秒，时长总和应与剧本长度匹配。
+          4. 使用 Markdown 表格输出，表头固定为：镜头 | 景别 | 画面 | 台词 | 时长 | 氛围 | 资产 | 备注。
+          5. 只输出表格，不要输出任何解释文字。

@@ -1,425 +1,964 @@
 /**
- * Browser half of @local/dsh-short-drama.
+ * Client half of `dsh-short-drama`（短剧工坊）.
  *
- * Registers a left-sidebar entry + main panel ("短剧工坊"), and calls the Host's
- * `shortDrama` Typert Remote for every operation. All UI text is inline and
- * follows the active DSH locale (zh/en) through ctx.locale registration.
+ * Registers one sidebar panel entry (`sidebar.panellist`) plus the page it opens
+ * (`main`). The page only submits tasks and reads Host history: every generation
+ * runs in the Host process, so switching panels, reloading, or closing the page
+ * never loses a queued or finished result.
  */
-
 window.__ModuleLoader__.load({
-  id: '@local/dsh-short-drama',
+  id: 'dsh-short-drama',
   factory(require) {
     const React = require('react')
     const h = React.createElement
+    const { useState, useEffect, useCallback } = React
 
-    // ---- Self-contained Typert Remote descriptor (matches index.js methods) --
-    // Inlined from @deepseek-ai/dsh-typert-protocol/remote-info so this client
-    // half needs no extra module-table entries beyond React.
-    class RemoteInfo {
-      constructor(spec) { this.spec = spec; this.index = undefined }
-      get package() { return this.spec.package }
-      get descriptors() { return this.resolve().descriptors }
-      get methods() { return this.resolve().methods }
-      resolve() {
-        if (this.index !== undefined) return this.index
-        const descriptors = [], methods = Object.create(null)
-        for (const [endpoint, definition] of Object.entries(this.spec.methods)) {
-          const sep = endpoint.indexOf('/')
-          const namespace = endpoint.slice(0, sep), method = endpoint.slice(sep + 1)
-          const parameters = definition.parameters.map(p => ({ ...p, wire: p.wire ?? p.name }))
-          const descriptor = { ...definition, id: `${this.spec.package}#${endpoint}`, namespace, method, parameters }
-          if (definition.invocation.kind === 'direct') {
-            methods[endpoint] = Object.assign(descriptor, {
-              input() { return { create: () => ({ parse: v => v }), jsonSchema: {} } },
-              invoke(remote, input, signal) {
-                const values = parameters.map(p => input[p.wire])
-                if (definition.cancellation !== undefined) values.push(signal)
-                const receiver = Reflect.get(remote, namespace)
-                const fn = Reflect.get(receiver, method)
-                return fn.apply(receiver, values)
-              },
-            })
+    const PANEL_ID = 'short-drama'
+    const NS = 'dsh-short-drama'
+    const API = '/short-drama/api'
+
+    const ZH = {
+      'panel.title': '短剧工坊',
+      'panel.subtitle': '把剧本变成分镜词，再交给小云雀 / Dreamina 出片；任务在宿主后台运行，离开页面也不会中断',
+      'tab.storyboard': '分镜词',
+      'tab.video': '视频任务',
+      'tab.settings': '设置',
+      'model.label': 'Gemini 模型',
+      'field.script': '剧本',
+      'placeholder.script': '粘贴短剧剧本……',
+      'field.preset': '分镜词规则（可自定义）',
+      'action.generate': '生成分镜词',
+      'action.regenerate': '重新生成',
+      'action.copy': '复制',
+      'action.copied': '已复制',
+      'action.refresh': '重新检测',
+      'storyboard.title': '分镜词结果',
+      'storyboard.empty': '还没有分镜词',
+      'storyboard.emptyHint': '左侧粘贴剧本后点「生成分镜词」，结果会自动带入视频任务。',
+      'status.key.ok': 'Key 已就绪',
+      'status.key.missing': 'Key 未配置',
+      'status.hint': '请到「设置 → 模型 → google」填写 Gemini API Key，或在 DSH 凭据中新增 {env}。',
+      'field.provider': '供应商',
+      'field.prompt': '提示词 / 分镜词',
+      'placeholder.prompt': '描述镜头：主体、动作、运镜、光线、氛围……',
+      'field.ratio': '比例',
+      'field.seconds': '时长（秒）',
+      'field.model': '模型（可选）',
+      'field.assets': '关联资产',
+      'field.target': '下载到',
+      'placeholder.target': '默认下载文件夹',
+      'action.submit': '提交视频生成',
+      'action.submitting': '提交中…',
+      'assets.title': '工作区资产',
+      'assets.empty': '当前工作区未发现资产。',
+      'assets.truncated': '资产过多，仅显示前若干项。',
+      'assets.selectWorkspace': '工作区',
+      'assets.clear': '清空选择',
+      'assets.selected': '已选',
+      'history.title': '任务历史',
+      'history.empty': '还没有任务',
+      'history.emptyHint': '写好分镜词后提交，任务会在后台排队执行。',
+      'action.download': '下载',
+      'action.cancel': '取消',
+      'action.delete': '删除',
+      'action.openNew': '新窗口打开',
+      'action.refreshList': '刷新',
+      'status.queued': '排队中',
+      'status.running': '生成中',
+      'status.succeeded': '已完成',
+      'status.completed': '已完成',
+      'status.failed': '失败',
+      'status.cancelled': '已取消',
+      'error.title': '出错了',
+      'error.emptyScript': '请先填写剧本。',
+      'error.emptyPrompt': '请先填写提示词 / 分镜词。',
+      'settings.model': 'Gemini 模型',
+      'settings.apiKeyEnv': 'API Key 环境变量 / 凭据名',
+      'settings.preset': '默认分镜词规则',
+      'settings.xiaoyunque': '小云雀 CLI 命令',
+      'settings.dreamina': 'Dreamina CLI 命令',
+      'settings.ratio': '默认比例',
+      'settings.seconds': '默认时长（秒）',
+      'settings.folder': '默认下载文件夹',
+      'settings.note': '以上为插件配置项的只读展示；修改请编辑 profile 的 cordis.patch.yml 中 dsh-short-drama 行。',
+      'meta.downloaded': '已下载到',
+    }
+
+    const EN = {
+      'panel.title': 'Short Drama Studio',
+      'panel.subtitle': 'Turn a script into storyboard panels, then render video with the Xiaoyunque or Dreamina CLI. Tasks run in the Host, so leaving the page never interrupts them.',
+      'tab.storyboard': 'Storyboard',
+      'tab.video': 'Video tasks',
+      'tab.settings': 'Settings',
+      'model.label': 'Gemini model',
+      'field.script': 'Script',
+      'placeholder.script': 'Paste your short-drama script…',
+      'field.preset': 'Storyboard rules (editable)',
+      'action.generate': 'Generate storyboard',
+      'action.regenerate': 'Regenerate',
+      'action.copy': 'Copy',
+      'action.copied': 'Copied',
+      'action.refresh': 'Recheck',
+      'storyboard.title': 'Storyboard result',
+      'storyboard.empty': 'No storyboard yet',
+      'storyboard.emptyHint': 'Paste a script on the left and choose Generate storyboard; the result carries into the video task.',
+      'status.key.ok': 'Key ready',
+      'status.key.missing': 'Key missing',
+      'status.hint': 'Add a Gemini API key under Settings → Models → google, or create the {env} credential in DSH.',
+      'field.provider': 'Provider',
+      'field.prompt': 'Prompt / storyboard',
+      'placeholder.prompt': 'Describe the shot: subject, action, camera, light, mood…',
+      'field.ratio': 'Ratio',
+      'field.seconds': 'Seconds',
+      'field.model': 'Model (optional)',
+      'field.assets': 'Linked assets',
+      'field.target': 'Download to',
+      'placeholder.target': 'Default download folder',
+      'action.submit': 'Submit video',
+      'action.submitting': 'Submitting…',
+      'assets.title': 'Workspace assets',
+      'assets.empty': 'No assets found in this workspace.',
+      'assets.truncated': 'Too many assets; showing the first ones.',
+      'assets.selectWorkspace': 'Workspace',
+      'assets.clear': 'Clear selection',
+      'assets.selected': 'Selected',
+      'history.title': 'Task history',
+      'history.empty': 'No tasks yet',
+      'history.emptyHint': 'Submit a storyboard and the task queues in the background.',
+      'action.download': 'Download',
+      'action.cancel': 'Cancel',
+      'action.delete': 'Delete',
+      'action.openNew': 'Open in new tab',
+      'action.refreshList': 'Refresh',
+      'status.queued': 'Queued',
+      'status.running': 'Running',
+      'status.succeeded': 'Done',
+      'status.completed': 'Done',
+      'status.failed': 'Failed',
+      'status.cancelled': 'Cancelled',
+      'error.title': 'Something went wrong',
+      'error.emptyScript': 'Please write the script first.',
+      'error.emptyPrompt': 'Please write the prompt first.',
+      'settings.model': 'Gemini model',
+      'settings.apiKeyEnv': 'API key env / credential name',
+      'settings.preset': 'Default storyboard rules',
+      'settings.xiaoyunque': 'Xiaoyunque CLI command',
+      'settings.dreamina': 'Dreamina CLI command',
+      'settings.ratio': 'Default ratio',
+      'settings.seconds': 'Default seconds',
+      'settings.folder': 'Default download folder',
+      'settings.note': 'These values are read-only here; edit the dsh-short-drama row in the profile cordis.patch.yml to change them.',
+      'meta.downloaded': 'Downloaded to',
+    }
+
+    /* ---------------------------------------------------------------- styles */
+
+    const STYLES = `
+      .sd-root{display:flex;flex-direction:column;height:100%;min-height:480px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-family:var(--dsw-font-family,inherit);overflow:hidden;--sd-accent:#2563eb;--sd-accent-strong:#1d4ed8;--sd-accent-soft:rgba(37,99,235,.10);--sd-accent-line:rgba(37,99,235,.45)}
+      .sd-scroll{flex:1;min-height:0;overflow:auto;padding:26px 30px 40px}
+      .sd-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:18px}
+      .sd-title{font-size:20px;font-weight:600;letter-spacing:.01em;line-height:1.25}
+      .sd-sub{font-size:12.5px;color:var(--dsw-alias-label-secondary);margin-top:5px;line-height:1.5;max-width:700px}
+      .sd-badges{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+      .sd-chip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);border-radius:999px;padding:4px 10px;font-size:11.5px;color:var(--dsw-alias-label-secondary);white-space:nowrap}
+      .sd-dot{width:7px;height:7px;border-radius:50%;background:#9ca3af;flex:none}
+      .sd-dot[data-ok="true"]{background:#22c55e}
+      .sd-dot[data-ok="false"]{background:#ef4444}
+      .sd-tabs{display:inline-flex;gap:2px;background:transparent;border:0;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.35));padding:0;margin-bottom:14px}
+      .sd-tab{border:0;border-bottom:2px solid transparent;background:transparent;color:var(--dsw-alias-label-secondary,#9ca3af);padding:7px 16px;cursor:pointer;font:inherit;font-size:12.5px;line-height:1.4;margin-bottom:-1px}
+      .sd-tab[data-active="true"]{color:var(--dsw-alias-label-primary,inherit);font-weight:600;border-bottom-color:var(--sd-accent)}
+      .sd-grid{display:grid;grid-template-columns:minmax(320px,460px) minmax(0,1fr);gap:18px;align-items:start}
+      @media (max-width:900px){.sd-grid{grid-template-columns:1fr}}
+      .sd-card{background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);border-radius:14px;padding:16px;box-sizing:border-box}
+      .sd-card+.sd-card{margin-top:14px}
+      .sd-label{display:block;font-size:11.5px;color:var(--dsw-alias-label-secondary);margin:0 0 6px}
+      .sd-model{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12px;color:var(--dsw-alias-label-secondary);padding:7px 10px;border:1px solid var(--dsw-alias-border-l1);border-radius:9px;background:var(--dsw-alias-bg-base);margin-bottom:12px}
+      .sd-model b{font-weight:600;color:var(--dsw-alias-label-primary);font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11.5px}
+      .sd-textarea{width:100%;box-sizing:border-box;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);border:1px solid var(--dsw-alias-border-l1);border-radius:10px;padding:10px 12px;font:inherit;font-size:13px;line-height:1.55;outline:none;resize:vertical}
+      .sd-textarea:focus{border-color:var(--sd-accent)}
+      .sd-input,.sd-select{width:100%;box-sizing:border-box;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);border:1px solid var(--dsw-alias-border-l1);border-radius:9px;padding:8px 10px;font:inherit;font-size:12.5px;outline:none}
+      .sd-input:focus,.sd-select:focus{border-color:var(--sd-accent)}
+      .sd-row{display:flex;gap:10px}
+      .sd-row>*{flex:1;min-width:0}
+      .sd-field{margin-top:12px}
+      .sd-actions{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap}
+      .sd-button{display:inline-flex;align-items:center;justify-content:center;gap:6px;border-radius:9px;padding:8px 14px;font:inherit;font-size:12.5px;cursor:pointer;border:1px solid transparent;white-space:nowrap;text-decoration:none}
+      .sd-button:disabled{opacity:.55;cursor:default}
+      .sd-primary{background:var(--sd-accent);color:#fff;border-color:var(--sd-accent);font-weight:600}
+      .sd-primary:hover:not(:disabled){background:var(--sd-accent-strong);border-color:var(--sd-accent-strong)}
+      .sd-ghost{border-color:var(--dsw-alias-border-l1);background:transparent;color:var(--dsw-alias-label-primary)}
+      .sd-ghost:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.12))}
+      .sd-error{display:flex;gap:8px;align-items:flex-start;border:1px solid rgba(239,68,68,.55);background:rgba(239,68,68,.08);color:#ef4444;border-radius:10px;padding:9px 12px;font-size:12.5px;line-height:1.5;margin-top:12px;word-break:break-word}
+      .sd-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:7px;min-height:220px;color:var(--dsw-alias-label-secondary);border:1px dashed var(--dsw-alias-border-l1);border-radius:12px;text-align:center;padding:24px;font-size:12.5px}
+      .sd-empty b{color:var(--dsw-alias-label-primary);font-size:13px;font-weight:600}
+      .sd-board{margin:0;white-space:pre-wrap;word-break:break-word;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l1);border-radius:10px;padding:12px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;line-height:1.6;max-height:min(56vh,520px);overflow:auto}
+      .sd-assets{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;max-height:190px;overflow:auto}
+      .sd-pill{font-size:10.5px;padding:3px 9px;border-radius:999px;border:1px solid var(--dsw-alias-border-l1);background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;font-family:inherit;max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .sd-pill:hover{color:var(--dsw-alias-label-primary)}
+      .sd-pill[data-active="true"]{border-color:var(--sd-accent);color:var(--sd-accent);background:var(--sd-accent-soft)}
+      .sd-assets-meta{font-size:11px;color:var(--dsw-alias-label-secondary);margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+      .sd-history{display:flex;flex-direction:column;gap:8px;margin-top:10px}
+      .sd-item{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;padding:10px 12px;background:var(--dsw-alias-bg-base)}
+      .sd-item-body{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:5px}
+      .sd-item-head{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:11.5px;color:var(--dsw-alias-label-secondary)}
+      .sd-item-prompt{font-size:12px;line-height:1.5;color:var(--dsw-alias-label-primary);white-space:pre-wrap;word-break:break-word;max-height:56px;overflow:hidden}
+      .sd-item-error{font-size:11.5px;color:#ef4444;line-height:1.5;word-break:break-word}
+      .sd-badge{display:inline-flex;align-items:center;gap:5px;padding:1px 8px;border-radius:999px;font-size:10.5px;border:1px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-secondary)}
+      .sd-badge[data-status="succeeded"],.sd-badge[data-status="completed"]{border-color:rgba(34,197,94,.6);color:#22c55e}
+      .sd-badge[data-status="failed"]{border-color:rgba(239,68,68,.6);color:#ef4444}
+      .sd-badge[data-status="running"]{border-color:var(--sd-accent-line);color:var(--sd-accent)}
+      .sd-badge[data-status="cancelled"]{border-color:rgba(148,163,184,.6);color:var(--dsw-alias-label-secondary)}
+      .sd-mini{font-size:10.5px;padding:3px 8px;border-radius:6px;border:1px solid var(--dsw-alias-border-l1);background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;font-family:inherit;white-space:nowrap}
+      .sd-mini:hover{color:var(--dsw-alias-label-primary)}
+      .sd-progress{height:5px;border-radius:999px;background:rgba(127,127,127,.22);overflow:hidden;margin-top:6px}
+      .sd-progress>i{display:block;height:100%;width:40%;background:var(--sd-accent);animation:sd-slide 1.3s ease-in-out infinite}
+      @keyframes sd-slide{0%{margin-left:-40%}100%{margin-left:100%}}
+      .sd-mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;word-break:break-all}
+      .sd-settings-row{display:flex;justify-content:space-between;gap:12px;padding:7px 0;border-bottom:1px solid var(--dsw-alias-border-l1);font-size:12px}
+      .sd-settings-row:last-child{border-bottom:0}
+      .sd-settings-row>span:first-child{color:var(--dsw-alias-label-secondary);flex:none}
+      .sd-settings-row>b{font-weight:500;text-align:right;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11.5px}
+    `
+
+    /* --------------------------------------------------------------- helpers */
+
+    async function readJsonResponse(response) {
+      let data = null
+      try {
+        data = await response.json()
+      } catch {
+        data = null
+      }
+      if (!response.ok || (data && data.ok === false)) {
+        const error = new Error(data && data.error ? String(data.error) : `HTTP ${response.status}`)
+        error.status = response.status
+        throw error
+      }
+      return data || {}
+    }
+
+    async function getJson(path) {
+      const response = await fetch(`${API}${path}`, { cache: 'no-store' })
+      return readJsonResponse(response)
+    }
+
+    async function postJson(path, body) {
+      const response = await fetch(`${API}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body || {}),
+      })
+      return readJsonResponse(response)
+    }
+
+    function Icon(props) {
+      const size = props && props.size ? props.size : 16
+      const active = Boolean(props && props.active)
+      return h(
+        'svg',
+        {
+          width: size,
+          height: size,
+          viewBox: '0 0 24 24',
+          fill: 'none',
+          stroke: 'currentColor',
+          strokeWidth: active ? 2 : 1.7,
+          strokeLinecap: 'round',
+          strokeLinejoin: 'round',
+          'aria-hidden': true,
+          style: { display: 'block', flex: 'none' },
+        },
+        h('rect', { x: 2.5, y: 4.5, width: 19, height: 15, rx: 3 }),
+        h('path', { d: 'M2.5 9h19' }),
+        h('path', { d: 'M7 4.5 9.5 9M14.5 4.5 17 9' }),
+        h('path', { d: 'M10.2 12.4v4.8l4.4-2.4z', fill: 'currentColor', stroke: 'none' }),
+      )
+    }
+
+    function statusKey(status) {
+      if (status === 'queued') return 'status.queued'
+      if (status === 'running') return 'status.running'
+      if (status === 'succeeded') return 'status.succeeded'
+      if (status === 'completed') return 'status.completed'
+      if (status === 'cancelled') return 'status.cancelled'
+      return 'status.failed'
+    }
+
+    function formatTime(value) {
+      if (!value) return ''
+      const date = new Date(value)
+      if (Number.isNaN(date.getTime())) return ''
+      return date.toLocaleString()
+    }
+
+    function assetGlyph(type) {
+      if (type === 'image') return '🖼'
+      if (type === 'video') return '🎬'
+      if (type === 'audio') return '🔊'
+      return '📄'
+    }
+
+    /* ------------------------------------------------------------- boundaries */
+
+    /** Keeps one view's render failure from blanking the whole panel. */
+    class ViewBoundary extends React.Component {
+      constructor(props) {
+        super(props)
+        this.state = { failed: false }
+      }
+
+      static getDerivedStateFromError() {
+        return { failed: true }
+      }
+
+      render() {
+        if (this.state.failed) {
+          return h('div', { className: 'sd-empty' }, h('b', null, '视图渲染失败'), '刷新页面后重试。')
+        }
+        return this.props.children
+      }
+    }
+
+    /* -------------------------------------------------------------------- page */
+
+    function Page(props) {
+      const t = props.t
+      const [tab, setTab] = useState('storyboard')
+      const [status, setStatus] = useState(null)
+      const [statusError, setStatusError] = useState('')
+
+      const [script, setScript] = useState('')
+      const [preset, setPreset] = useState('')
+      const [storyboard, setStoryboard] = useState('')
+      const [generating, setGenerating] = useState(false)
+
+      const [provider, setProvider] = useState('xiaoyunque')
+      const [prompt, setPrompt] = useState('')
+      const [ratio, setRatio] = useState('9:16')
+      const [seconds, setSeconds] = useState(5)
+      const [model, setModel] = useState('')
+      const [targetDir, setTargetDir] = useState('')
+      const [submitting, setSubmitting] = useState(false)
+
+      const [workspaceId, setWorkspaceId] = useState('')
+      const [assets, setAssets] = useState([])
+      const [assetsTruncated, setAssetsTruncated] = useState(false)
+      const [selected, setSelected] = useState([])
+
+      const [items, setItems] = useState([])
+      const [error, setError] = useState('')
+      const [note, setNote] = useState('')
+      const [refreshTick, setRefreshTick] = useState(0)
+      const [busyId, setBusyId] = useState('')
+
+      /* ---- status ---- */
+      useEffect(() => {
+        let alive = true
+        void (async () => {
+          try {
+            const data = await getJson('/status')
+            if (!alive) return
+            setStatus(data)
+            setStatusError('')
+            if (!preset && data.storyboardPreset) setPreset(data.storyboardPreset)
+            if (data.defaultRatio) setRatio((value) => (value === '9:16' ? data.defaultRatio : value))
+            if (data.defaultDuration) setSeconds((value) => (value === 5 ? data.defaultDuration : value))
+            if (!workspaceId && Array.isArray(data.workspaces) && data.workspaces.length > 0) {
+              setWorkspaceId(data.workspaces[0].id)
+            }
+          } catch (caught) {
+            if (!alive) return
+            setStatusError(caught instanceof Error ? caught.message : String(caught))
           }
-          descriptors.push(descriptor)
+        })()
+        return () => {
+          alive = false
         }
-        return (this.index = { descriptors, methods })
-      }
-    }
-    const strictCodec = () => ({
-      mode: 'strict', typeSymbol: 'unknown',
-      create: () => ({ parse: v => v }),
-      jsonSchema: {},
-    })
-    const str = (desc) => ({ mode: 'strict', typeSymbol: 'object', create: () => ({ parse: v => v }), description: desc, jsonSchema: { type: 'object' } })
-    const PARAMS = (names) => names.map(name => ({
-      name, wire: name, source: 'json', description: name,
-      codec: strictCodec(), strictCodec: strictCodec(),
-      acceptsUndefined: false,
-    }))
-    const method = (desc, params) => ({
-      service: 'shortDrama', description: desc, invocation: { kind: 'direct' },
-      parameters: PARAMS(params.filter(p => p !== 'signal')),
-      ...(params.includes('signal') ? { cancellation: { parameter: 'signal' } } : {}),
-      result: str(desc),
-      sourceLocation: { file: 'dsh-short-drama/index.js', line: 1, column: 1 },
-    })
-    const TYPERT = new RemoteInfo({
-      package: '@local/dsh-short-drama',
-      methods: {
-        'shortDrama/config': method('Read config', []),
-        'shortDrama/saveConfig': method('Save config', ['patch']),
-        'shortDrama/listAssets': method('List assets', ['workspaceId']),
-        'shortDrama/generateStoryboard': method('Generate storyboard', ['script', 'preset', 'signal']),
-        'shortDrama/submitVideo': method('Submit video', ['request', 'signal']),
-        'shortDrama/jobStatus': method('Job status', ['jobId']),
-        'shortDrama/listJobs': method('List jobs', []),
-        'shortDrama/cancelJob': method('Cancel job', ['jobId']),
-        'shortDrama/downloadJob': method('Download job', ['jobId', 'targetDir']),
-        'shortDrama/downloadUrl': method('Download URL', ['url', 'fileName', 'workspaceId', 'targetDir']),
-      },
-    })
+      }, [refreshTick])
 
-    // ---- i18n -------------------------------------------------------------
-    const dict = {
-      en: {
-        panel: 'Short Drama Studio',
-        subtitle: 'Gemini storyboards & AI video generation',
-        tabStoryboard: 'Storyboard', tabVideo: 'Video jobs', tabSettings: 'Settings',
-        scriptLabel: 'Script', scriptPlaceholder: 'Paste your short-drama script here…',
-        presetLabel: 'Storyboard rules (editable)', generate: 'Generate storyboard',
-        generating: 'Generating…', storyboardResult: 'Storyboard result', copy: 'Copy',
-        assets: 'Workspace assets', refreshAssets: 'Refresh', noAssets: 'No assets found in this workspace.',
-        provider: 'Provider', prompt: 'Prompt / storyboard text', ratio: 'Ratio', duration: 'Duration (s)',
-        model: 'Model (optional)', extraAssets: 'Linked assets', submit: 'Submit video',
-        jobs: 'Jobs', status: 'Status', actions: 'Actions', download: 'Download',
-        cancel: 'Cancel', none: 'No jobs yet.', geminiModel: 'Gemini model',
-        geminiProvider: 'LLM provider', apiKeyRef: 'API key credential ref',
-        presetRules: 'Default storyboard rules', xiaoyunque: 'Xiaoyunque CLI command',
-        dreamina: 'Dreamina CLI command', downloadFolder: 'Default download folder',
-        downloadTarget: 'Download to folder', defaultDownload: 'Project default folder',
-        prerequisites: 'Requires a configured Gemini provider (or GEMINI_API_KEY) and both CLIs on PATH.',
-        save: 'Save settings', saved: 'Settings saved', error: 'Error',
-        selectAssets: 'Select assets to link', workspace: 'Workspace',
-      },
-      zh: {
-        panel: '短剧工坊', subtitle: 'Gemini 分镜词与 AI 视频生成',
-        tabStoryboard: '分镜词', tabVideo: '视频任务', tabSettings: '设置',
-        scriptLabel: '剧本', scriptPlaceholder: '在此粘贴短剧剧本…',
-        presetLabel: '分镜词规则（可自定义）', generate: '生成分镜词',
-        generating: '生成中…', storyboardResult: '分镜词结果', copy: '复制',
-        assets: '工作区资产', refreshAssets: '刷新', noAssets: '当前工作区未发现资产。',
-        provider: '供应商', prompt: '提示词 / 分镜词', ratio: '比例', duration: '时长（秒）',
-        model: '模型（可选）', extraAssets: '关联资产', submit: '提交视频生成',
-        jobs: '任务列表', status: '状态', actions: '操作', download: '下载',
-        cancel: '取消', none: '暂无任务。', geminiModel: 'Gemini 模型',
-        geminiProvider: 'LLM 供应商', apiKeyRef: 'API Key 凭据名',
-        presetRules: '默认分镜词规则', xiaoyunque: '小云雀 CLI 命令',
-        dreamina: 'Dreamina CLI 命令', downloadFolder: '默认下载文件夹',
-        downloadTarget: '下载到文件夹', defaultDownload: '使用项目默认文件夹',
-        prerequisites: '需先配置 Gemini 供应商（或 GEMINI_API_KEY），并确保两个 CLI 已在 PATH 中。',
-        save: '保存设置', saved: '设置已保存', error: '错误',
-        selectAssets: '选择要关联的资产', workspace: '工作区',
-      },
-    }
-    const localeNs = 'dshShortDrama'
-
-    // ---- tiny UI primitives ----------------------------------------------
-    function cssVars() {
-      return {
-        bg: 'var(--dsw-alias-bg-base)', layer: 'var(--dsw-alias-bg-layer-1)', layer2: 'var(--dsw-alias-bg-layer-2)',
-        border: 'var(--dsw-alias-border-l1)', brand: 'var(--dsw-alias-brand-primary)',
-        text: 'var(--dsw-alias-label-primary)', sub: 'var(--dsw-alias-label-secondary)',
-        err: 'var(--dsw-alias-state-error-primary)', ok: 'var(--dsw-alias-state-success-primary)',
-      }
-    }
-    const S = {
-      wrap: { display: 'flex', flexDirection: 'column', height: '100%', boxSizing: 'border-box', background: cssVars().bg, color: cssVars().text, fontSize: 13 },
-      head: { padding: '18px 20px 10px', borderBottom: `1px solid ${cssVars().border}` },
-      title: { margin: 0, fontSize: 16, fontWeight: 650 },
-      sub: { margin: '4px 0 0', fontSize: 12, color: cssVars().sub },
-      tabs: { display: 'flex', gap: 4, padding: '10px 16px 0', borderBottom: `1px solid ${cssVars().border}` },
-      tab: (active) => ({ padding: '8px 12px', cursor: 'pointer', border: 'none', background: 'transparent', color: active ? cssVars().brand : cssVars().sub, borderBottom: active ? `2px solid ${cssVars().brand}` : '2px solid transparent', fontSize: 13 }),
-      body: { flex: 1, overflow: 'auto', padding: 16, display: 'flex', flexDirection: 'column', gap: 14 },
-      label: { display: 'block', fontSize: 12, color: cssVars().sub, marginBottom: 6 },
-      input: { width: '100%', boxSizing: 'border-box', padding: '8px 10px', borderRadius: 6, border: `1px solid ${cssVars().border}`, background: cssVars().layer, color: cssVars().text, fontSize: 13, fontFamily: 'inherit' },
-      textarea: { width: '100%', boxSizing: 'border-box', padding: 10, borderRadius: 6, border: `1px solid ${cssVars().border}`, background: cssVars().layer, color: cssVars().text, fontSize: 13, fontFamily: 'inherit', resize: 'vertical', lineHeight: 1.5 },
-      row: { display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' },
-      btn: (primary) => ({ padding: '8px 14px', borderRadius: 6, border: primary ? `1px solid ${cssVars().brand}` : `1px solid ${cssVars().border}`, background: primary ? cssVars().brand : cssVars().layer, color: primary ? '#fff' : cssVars().text, cursor: 'pointer', fontSize: 13, fontWeight: 550 }),
-      card: { padding: 12, borderRadius: 8, border: `1px solid ${cssVars().border}`, background: cssVars().layer2 },
-      errBox: { padding: 10, borderRadius: 6, background: cssVars().layer2, border: `1px solid ${cssVars().err}`, color: cssVars().err, fontSize: 12, whiteSpace: 'pre-wrap' },
-      chip: (on) => ({ padding: '4px 9px', borderRadius: 14, border: `1px solid ${on ? cssVars().brand : cssVars().border}`, background: on ? cssVars().brand : cssVars().layer, color: on ? '#fff' : cssVars().sub, cursor: 'pointer', fontSize: 12 }),
-      badge: (s) => {
-        const solid = s === 'succeeded' || s === 'failed'
-        return {
-          padding: '2px 8px', borderRadius: 10, fontSize: 11,
-          background: s === 'succeeded' ? cssVars().ok : s === 'failed' ? cssVars().err : cssVars().layer2,
-          color: solid ? '#fff' : cssVars().text,
-          border: solid ? 'none' : `1px solid ${cssVars().border}`,
+      /* ---- assets ---- */
+      useEffect(() => {
+        let alive = true
+        void (async () => {
+          try {
+            const query = workspaceId ? `?workspaceId=${encodeURIComponent(workspaceId)}` : ''
+            const data = await getJson(`/assets${query}`)
+            if (!alive) return
+            setAssets(Array.isArray(data.assets) ? data.assets : [])
+            setAssetsTruncated(Boolean(data.truncated))
+          } catch (caught) {
+            if (!alive) return
+            setAssets([])
+            setStatusError(caught instanceof Error ? caught.message : String(caught))
+          }
+        })()
+        return () => {
+          alive = false
         }
-      },
-      pre: { margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', background: cssVars().layer2, padding: 12, borderRadius: 6, fontFamily: 'ui-monospace, monospace', fontSize: 12, maxHeight: 420, overflow: 'auto' },
+      }, [workspaceId, refreshTick])
+
+      /* ---- history + polling ---- */
+      const loadHistory = useCallback(async () => {
+        try {
+          const data = await getJson('/history')
+          setItems(Array.isArray(data.items) ? data.items : [])
+        } catch {
+          /* the next tick retries */
+        }
+      }, [])
+
+      useEffect(() => {
+        void loadHistory()
+      }, [loadHistory, refreshTick])
+
+      const active = items.some((item) => item.status === 'queued' || item.status === 'running')
+      useEffect(() => {
+        if (!active) return undefined
+        const timer = setInterval(() => {
+          void loadHistory()
+        }, 2500)
+        return () => clearInterval(timer)
+      }, [active, loadHistory])
+
+      /* ---- actions ---- */
+      const onGenerate = useCallback(async () => {
+        setError('')
+        setNote('')
+        if (!script.trim()) {
+          setError(t('error.emptyScript'))
+          return
+        }
+        setGenerating(true)
+        try {
+          const data = await postJson('/storyboard', { script, preset, model: model.trim() || undefined })
+          const text = String(data.storyboard || '')
+          setStoryboard(text)
+          // Carry the result into the video task so the next step is one click.
+          setPrompt((current) => (current.trim() ? current : text))
+        } catch (caught) {
+          setError(caught instanceof Error ? caught.message : String(caught))
+        } finally {
+          setGenerating(false)
+        }
+      }, [script, preset, model, t])
+
+      const onSubmit = useCallback(async () => {
+        setError('')
+        setNote('')
+        const body = (prompt.trim() || storyboard.trim())
+        if (!body) {
+          setError(t('error.emptyPrompt'))
+          return
+        }
+        setSubmitting(true)
+        try {
+          await postJson('/video', {
+            provider,
+            prompt: body,
+            ratio,
+            seconds: Number(seconds) || 5,
+            model: model.trim() || undefined,
+            assets: selected,
+            workspaceId: workspaceId || undefined,
+            targetDir: targetDir.trim() || undefined,
+          })
+          await loadHistory()
+          setTab('video')
+        } catch (caught) {
+          setError(caught instanceof Error ? caught.message : String(caught))
+        } finally {
+          setSubmitting(false)
+        }
+      }, [prompt, storyboard, provider, ratio, seconds, model, selected, workspaceId, targetDir, loadHistory, t])
+
+      const onCancel = useCallback(async (id) => {
+        setBusyId(id)
+        try {
+          await postJson(`/video/${encodeURIComponent(id)}/cancel`, {})
+          await loadHistory()
+        } catch (caught) {
+          setError(caught instanceof Error ? caught.message : String(caught))
+        } finally {
+          setBusyId('')
+        }
+      }, [loadHistory])
+
+      const onDownload = useCallback(async (item) => {
+        setBusyId(item.id)
+        try {
+          const data = await postJson(`/video/${encodeURIComponent(item.id)}/download`, { targetDir: targetDir.trim() || undefined })
+          setNote(`${t('meta.downloaded')} ${data.path}`)
+          await loadHistory()
+        } catch (caught) {
+          setError(caught instanceof Error ? caught.message : String(caught))
+        } finally {
+          setBusyId('')
+        }
+      }, [targetDir, loadHistory, t])
+
+      const onDelete = useCallback(async (id) => {
+        setBusyId(id)
+        try {
+          await postJson('/history/delete', { id })
+          await loadHistory()
+        } catch (caught) {
+          setError(caught instanceof Error ? caught.message : String(caught))
+        } finally {
+          setBusyId('')
+        }
+      }, [loadHistory])
+
+      const onCopy = useCallback(async () => {
+        try {
+          await navigator.clipboard.writeText(storyboard)
+          setNote(t('action.copied'))
+        } catch {
+          setNote('')
+        }
+      }, [storyboard, t])
+
+      const toggleAsset = useCallback((assetPath) => {
+        setSelected((current) => (
+          current.includes(assetPath)
+            ? current.filter((value) => value !== assetPath)
+            : [...current, assetPath]
+        ))
+      }, [])
+
+      /* ---- render ---- */
+      const configured = Boolean(status && status.configured)
+      const modelLabel = status ? status.model : ''
+      const workspaces = status && Array.isArray(status.workspaces) ? status.workspaces : []
+
+      function renderBadges() {
+        return h(
+          'div',
+          { className: 'sd-badges' },
+          h(
+            'span',
+            { className: 'sd-chip' },
+            h('i', { className: 'sd-dot', 'data-ok': configured ? 'true' : 'false' }),
+            configured ? t('status.key.ok') : t('status.key.missing'),
+            status && status.source ? ` · ${status.source}` : '',
+          ),
+          modelLabel ? h('span', { className: 'sd-chip sd-mono' }, modelLabel) : null,
+          h(
+            'button',
+            { type: 'button', className: 'sd-button sd-ghost', onClick: () => setRefreshTick((value) => value + 1) },
+            t('action.refresh'),
+          ),
+        )
+      }
+
+      function renderStoryboardTab() {
+        return h(
+          'div',
+          { className: 'sd-grid' },
+          h(
+            'div',
+            null,
+            h(
+              'div',
+              { className: 'sd-card' },
+              h('div', { className: 'sd-model' }, t('model.label'), h('b', null, modelLabel || '—')),
+              h('label', { className: 'sd-label', htmlFor: 'sd-script' }, t('field.script')),
+              h('textarea', {
+                id: 'sd-script',
+                className: 'sd-textarea',
+                style: { minHeight: '150px' },
+                value: script,
+                placeholder: t('placeholder.script'),
+                onChange: (event) => setScript(event.target.value),
+              }),
+              h('div', { className: 'sd-field' },
+                h('label', { className: 'sd-label', htmlFor: 'sd-preset' }, t('field.preset')),
+                h('textarea', {
+                  id: 'sd-preset',
+                  className: 'sd-textarea',
+                  style: { minHeight: '170px' },
+                  value: preset,
+                  onChange: (event) => setPreset(event.target.value),
+                }),
+              ),
+              h('div', { className: 'sd-actions' },
+                h(
+                  'button',
+                  { type: 'button', className: 'sd-button sd-primary', disabled: generating, onClick: onGenerate },
+                  generating ? '…' : (storyboard ? t('action.regenerate') : t('action.generate')),
+                ),
+                storyboard
+                  ? h('button', { type: 'button', className: 'sd-button sd-ghost', onClick: onCopy }, t('action.copy'))
+                  : null,
+              ),
+            ),
+          ),
+          h(
+            'div',
+            null,
+            h(
+              'div',
+              { className: 'sd-card' },
+              h('div', { className: 'sd-label', style: { fontSize: '12.5px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)' } }, t('storyboard.title')),
+              storyboard
+                ? h('pre', { className: 'sd-board' }, storyboard)
+                : h(
+                    'div',
+                    { className: 'sd-empty' },
+                    h('b', null, t('storyboard.empty')),
+                    t('storyboard.emptyHint'),
+                  ),
+            ),
+            renderAssetsCard(),
+          ),
+        )
+      }
+
+      function renderAssetsCard() {
+        return h(
+          'div',
+          { className: 'sd-card' },
+          h('div', { className: 'sd-label', style: { fontSize: '12.5px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)' } },
+            `${t('assets.title')} (${assets.length})`),
+          workspaces.length > 1
+            ? h('select', {
+                className: 'sd-select',
+                value: workspaceId,
+                onChange: (event) => setWorkspaceId(event.target.value),
+              }, workspaces.map((workspace) => h('option', { key: workspace.id, value: workspace.id }, workspace.title)))
+            : null,
+          assets.length === 0
+            ? h('div', { className: 'sd-assets-meta' }, t('assets.empty'))
+            : h(
+                'div',
+                { className: 'sd-assets' },
+                assets.map((asset) => h(
+                  'button',
+                  {
+                    key: asset.path,
+                    type: 'button',
+                    className: 'sd-pill',
+                    'data-active': selected.includes(asset.path) ? 'true' : 'false',
+                    title: asset.path,
+                    onClick: () => toggleAsset(asset.path),
+                  },
+                  `${assetGlyph(asset.type)} ${asset.relative}`,
+                )),
+              ),
+          h(
+            'div',
+            { className: 'sd-assets-meta' },
+            assetsTruncated ? t('assets.truncated') : null,
+            selected.length > 0
+              ? h(
+                  'button',
+                  { type: 'button', className: 'sd-mini', onClick: () => setSelected([]) },
+                  `${t('assets.selected')} ${selected.length} · ${t('assets.clear')}`,
+                )
+              : null,
+          ),
+        )
+      }
+
+      function renderVideoTab() {
+        return h(
+          'div',
+          { className: 'sd-grid' },
+          h(
+            'div',
+            { className: 'sd-card' },
+            h('div', { className: 'sd-model' }, t('model.label'), h('b', null, modelLabel || '—')),
+            h('div', { className: 'sd-row' },
+              h('div', null,
+                h('label', { className: 'sd-label', htmlFor: 'sd-provider' }, t('field.provider')),
+                h('select', {
+                  id: 'sd-provider',
+                  className: 'sd-select',
+                  value: provider,
+                  onChange: (event) => setProvider(event.target.value),
+                },
+                  h('option', { value: 'xiaoyunque' }, '小云雀 (xiaoyunque)'),
+                  h('option', { value: 'dreamina' }, 'Dreamina'),
+                ),
+              ),
+              h('div', null,
+                h('label', { className: 'sd-label', htmlFor: 'sd-ratio' }, t('field.ratio')),
+                h('input', {
+                  id: 'sd-ratio',
+                  className: 'sd-input',
+                  value: ratio,
+                  onChange: (event) => setRatio(event.target.value),
+                }),
+              ),
+              h('div', null,
+                h('label', { className: 'sd-label', htmlFor: 'sd-seconds' }, t('field.seconds')),
+                h('input', {
+                  id: 'sd-seconds',
+                  className: 'sd-input',
+                  type: 'number',
+                  min: 1,
+                  max: 60,
+                  value: seconds,
+                  onChange: (event) => setSeconds(event.target.value),
+                }),
+              ),
+            ),
+            h('div', { className: 'sd-field' },
+              h('label', { className: 'sd-label', htmlFor: 'sd-model' }, t('field.model')),
+              h('input', {
+                id: 'sd-model',
+                className: 'sd-input',
+                value: model,
+                onChange: (event) => setModel(event.target.value),
+              }),
+            ),
+            h('div', { className: 'sd-field' },
+              h('label', { className: 'sd-label', htmlFor: 'sd-prompt' }, t('field.prompt')),
+              h('textarea', {
+                id: 'sd-prompt',
+                className: 'sd-textarea',
+                style: { minHeight: '130px' },
+                value: prompt || storyboard,
+                placeholder: t('placeholder.prompt'),
+                onChange: (event) => setPrompt(event.target.value),
+              }),
+            ),
+            h('div', { className: 'sd-field' },
+              h('label', { className: 'sd-label', htmlFor: 'sd-target' }, t('field.target')),
+              h('input', {
+                id: 'sd-target',
+                className: 'sd-input',
+                value: targetDir,
+                placeholder: t('placeholder.target'),
+                onChange: (event) => setTargetDir(event.target.value),
+              }),
+            ),
+            h('div', { className: 'sd-field' },
+              h('div', { className: 'sd-label' }, `${t('field.assets')} (${selected.length})`),
+              selected.length === 0
+                ? h('div', { className: 'sd-assets-meta' }, t('assets.empty'))
+                : h('div', { className: 'sd-assets' }, selected.map((assetPath) => h(
+                    'button',
+                    {
+                      key: assetPath,
+                      type: 'button',
+                      className: 'sd-pill',
+                      'data-active': 'true',
+                      title: assetPath,
+                      onClick: () => toggleAsset(assetPath),
+                    },
+                    `× ${assetPath.split(/[\\/]/).pop()}`,
+                  ))),
+            ),
+            h('div', { className: 'sd-actions' },
+              h(
+                'button',
+                { type: 'button', className: 'sd-button sd-primary', disabled: submitting, onClick: onSubmit },
+                submitting ? t('action.submitting') : t('action.submit'),
+              ),
+            ),
+          ),
+          h('div', null, renderHistoryCard()),
+        )
+      }
+
+      function renderHistoryCard() {
+        return h(
+          'div',
+          { className: 'sd-card' },
+          h('div', { style: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: '10px' } },
+            h('div', { className: 'sd-label', style: { fontSize: '12.5px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)' } }, t('history.title')),
+            h('button', { type: 'button', className: 'sd-mini', onClick: () => setRefreshTick((value) => value + 1) }, t('action.refreshList')),
+          ),
+          items.length === 0
+            ? h('div', { className: 'sd-empty' }, h('b', null, t('history.empty')), t('history.emptyHint'))
+            : h(
+                'div',
+                { className: 'sd-history' },
+                items.map((item) => h(
+                  'div',
+                  { key: item.id, className: 'sd-item' },
+                  h(
+                    'div',
+                    { className: 'sd-item-body' },
+                    h(
+                      'div',
+                      { className: 'sd-item-head' },
+                      h('span', { className: 'sd-badge', 'data-status': item.status }, t(statusKey(item.status))),
+                      h('span', null, item.provider === 'dreamina' ? 'Dreamina' : '小云雀'),
+                      h('span', null, `${item.ratio} · ${item.seconds}s`),
+                      h('span', null, formatTime(item.createdAt)),
+                    ),
+                    h('div', { className: 'sd-item-prompt' }, item.prompt || ''),
+                    item.status === 'running' || item.status === 'queued'
+                      ? h('div', null,
+                          h('div', { className: 'sd-assets-meta' }, item.stage || ''),
+                          h('div', { className: 'sd-progress' }, h('i')),
+                        )
+                      : null,
+                    item.error ? h('div', { className: 'sd-item-error' }, item.error) : null,
+                    item.resultName ? h('div', { className: 'sd-assets-meta sd-mono' }, item.resultName) : null,
+                  ),
+                  h(
+                    'div',
+                    { style: { display: 'flex', flexDirection: 'column', gap: '6px', flex: 'none' } },
+                    item.status === 'succeeded' || item.status === 'completed'
+                      ? h('button', {
+                          type: 'button',
+                          className: 'sd-mini',
+                          disabled: busyId === item.id,
+                          onClick: () => onDownload(item),
+                        }, t('action.download'))
+                      : null,
+                    item.status === 'running' || item.status === 'queued'
+                      ? h('button', {
+                          type: 'button',
+                          className: 'sd-mini',
+                          disabled: busyId === item.id,
+                          onClick: () => onCancel(item.id),
+                        }, t('action.cancel'))
+                      : null,
+                    h('button', {
+                      type: 'button',
+                      className: 'sd-mini',
+                      disabled: busyId === item.id,
+                      onClick: () => onDelete(item.id),
+                    }, t('action.delete')),
+                  ),
+                )),
+              ),
+        )
+      }
+
+      function renderSettingsTab() {
+        if (!status) {
+          return h('div', { className: 'sd-empty' }, h('b', null, t('error.title')), statusError || '—')
+        }
+        const rows = [
+          [t('settings.model'), status.model],
+          [t('settings.apiKeyEnv'), status.apiKeyEnv],
+          [t('settings.xiaoyunque'), status.xiaoyunqueCommand],
+          [t('settings.dreamina'), status.dreaminaCommand],
+          [t('settings.ratio'), status.defaultRatio],
+          [t('settings.seconds'), String(status.defaultDuration)],
+          [t('settings.folder'), status.downloadFolder],
+        ]
+        return h(
+          'div',
+          { className: 'sd-card' },
+          rows.map(([label, value]) => h(
+            'div',
+            { key: label, className: 'sd-settings-row' },
+            h('span', null, label),
+            h('b', { title: String(value || '') }, String(value || '—')),
+          )),
+          h('div', { className: 'sd-field' },
+            h('div', { className: 'sd-label' }, t('settings.preset')),
+            h('pre', { className: 'sd-board', style: { maxHeight: '240px' } }, status.storyboardPreset || ''),
+          ),
+          h('div', { className: 'sd-assets-meta' }, t('settings.note')),
+        )
+      }
+
+      return h(
+        'div',
+        { className: 'sd-root' },
+        h('style', null, STYLES),
+        h(
+          'div',
+          { className: 'sd-scroll' },
+          h(
+            'div',
+            { className: 'sd-head' },
+            h(
+              'div',
+              null,
+              h('div', { className: 'sd-title' }, t('panel.title')),
+              h('div', { className: 'sd-sub' }, t('panel.subtitle')),
+            ),
+            renderBadges(),
+          ),
+          statusError
+            ? h('div', { className: 'sd-error' }, statusError)
+            : null,
+          !configured && status
+            ? h('div', { className: 'sd-error' }, (t('status.hint') || '').replace('{env}', status.apiKeyEnv || 'GEMINI_API_KEY'))
+            : null,
+          h(
+            'div',
+            { className: 'sd-tabs' },
+            h('button', {
+              type: 'button',
+              className: 'sd-tab',
+              'data-active': tab === 'storyboard' ? 'true' : 'false',
+              onClick: () => setTab('storyboard'),
+            }, t('tab.storyboard')),
+            h('button', {
+              type: 'button',
+              className: 'sd-tab',
+              'data-active': tab === 'video' ? 'true' : 'false',
+              onClick: () => setTab('video'),
+            }, t('tab.video')),
+            h('button', {
+              type: 'button',
+              className: 'sd-tab',
+              'data-active': tab === 'settings' ? 'true' : 'false',
+              onClick: () => setTab('settings'),
+            }, t('tab.settings')),
+          ),
+          error
+            ? h('div', { className: 'sd-error' }, `${t('error.title')}: ${error}`)
+            : null,
+          note
+            ? h('div', { className: 'sd-assets-meta' }, note)
+            : null,
+          tab === 'storyboard'
+            ? h(ViewBoundary, { key: 'storyboard' }, renderStoryboardTab())
+            : tab === 'video'
+              ? h(ViewBoundary, { key: 'video' }, renderVideoTab())
+              : h(ViewBoundary, { key: 'settings' }, renderSettingsTab()),
+        ),
+      )
     }
+
+    /* ------------------------------------------------------------------- apply */
 
     return {
-      inject: ['slots', 'layout', 'locale', 'remote'],
-      async apply(ctx) {
-        ctx.locale.register(localeNs, {
-          en: dict.en, zh: dict.zh,
-          'zh-cn': dict.zh, 'en-us': dict.en,
-        }, 'dshShortDrama')
-        const t = ctx.locale.bind ? ctx.locale.bind(localeNs) : (k) => (dict.zh[k] || dict.en[k] || k)
+      inject: ['slots', 'locale'],
+      apply(ctx) {
+        ctx.effect(() => ctx.locale.register(NS, 'zh', ZH), 'dsh-short-drama: zh dictionary')
+        ctx.effect(() => ctx.locale.register(NS, 'en', EN), 'dsh-short-drama: en dictionary')
+        const t = ctx.locale.bind(NS)
 
-        const unmount = await ctx.remote.$mount(TYPERT)
-
-        const call = (method, ...args) => {
-          const ns = ctx.remote.shortDrama
-          if (!ns) throw new Error('shortDrama Remote 未就绪，请刷新页面后重试。')
-          return ns[method](...args)
-        }
-
-        function Panel() {
-          const [tab, setTab] = React.useState('storyboard')
-          const [cfg, setCfg] = React.useState(null)
-          const [script, setScript] = React.useState('')
-          const [preset, setPreset] = React.useState('')
-          const [board, setBoard] = React.useState('')
-          const [assets, setAssets] = React.useState([])
-          const [workspaceId, setWorkspaceId] = React.useState('')
-          const [busy, setBusy] = React.useState(false)
-          const [error, setError] = React.useState('')
-          const [notice, setNotice] = React.useState('')
-          const [jobs, setJobs] = React.useState([])
-          const [form, setForm] = React.useState({ provider: 'xiaoyunque', ratio: '9:16', duration: 5, model: '', targetDir: '' })
-          const [selected, setSelected] = React.useState([])
-
-          const loadConfig = React.useCallback(async () => {
-            try {
-              const r = await call('config')
-              const c = r.config || r
-              setCfg(c)
-              setPreset(c.storyboardPreset || '')
-              setForm(f => ({
-                ...f,
-                ratio: c.defaultRatio || f.ratio,
-                duration: c.defaultDuration || f.duration,
-                targetDir: f.targetDir || c.downloadFolder || '',
-              }))
-              if (!workspaceId && c.workspaces?.length) setWorkspaceId(String(c.workspaces[0].id))
-            } catch (e) { setError(String(e?.message || e)) }
-          }, [workspaceId])
-
-          const refreshAssets = React.useCallback(async () => {
-            try {
-              const r = await call('listAssets', workspaceId || undefined)
-              setAssets(r.assets || [])
-            } catch (e) { setError(String(e?.message || e)) }
-          }, [workspaceId])
-
-          const refreshJobs = React.useCallback(async () => {
-            try {
-              const r = await call('listJobs')
-              setJobs(r.jobs || [])
-            } catch (e) { setError(String(e?.message || e)) }
-          }, [])
-
-          React.useEffect(() => { void loadConfig(); void refreshAssets(); void refreshJobs() }, [])
-          React.useEffect(() => { void refreshAssets() }, [workspaceId])
-
-          // Poll running jobs. Depend on a boolean so the timer is not recreated
-          // on every fresh jobs array from each tick.
-          const anyRunning = jobs.some(j => j.status === 'running' || j.status === 'queued')
-          React.useEffect(() => {
-            if (!anyRunning) return
-            const timer = setInterval(async () => {
-              try {
-                const r = await call('listJobs')
-                setJobs(r.jobs || [])
-              } catch (e) { setError(String(e?.message || e)) }
-            }, 2500)
-            return () => clearInterval(timer)
-          }, [anyRunning])
-
-          const doGenerate = async () => {
-            setBusy(true); setError(''); setNotice('')
-            try {
-              const ctrl = new AbortController()
-              const r = await call('generateStoryboard', script, preset, ctrl.signal)
-              const s = r.storyboard || ''
-              setBoard(s)
-              setForm(f => ({ ...f, prompt: s }))
-            } catch (e) { setError(String(e?.message || e)) }
-            finally { setBusy(false) }
-          }
-
-          const doSubmit = async () => {
-            setBusy(true); setError(''); setNotice('')
-            try {
-              const r = await call('submitVideo', {
-                provider: form.provider,
-                prompt: form.prompt || board,
-                assets: selected,
-                ratio: form.ratio,
-                duration: Number(form.duration),
-                model: form.model || undefined,
-                workspaceId: workspaceId || undefined,
-              })
-              setNotice(`${r.command} ${(r.args || []).join(' ')}`)
-              await refreshJobs()
-              setTab('video')
-            } catch (e) { setError(String(e?.message || e)) }
-            finally { setBusy(false) }
-          }
-
-          const doDownload = async (job) => {
-            try {
-              const r = await call('downloadJob', job.id, form.targetDir || undefined)
-              setNotice(`${t('download')}: ${r.path}`)
-            } catch (e) { setError(String(e?.message || e)) }
-          }
-
-          const doSave = async () => {
-            try {
-              await call('saveConfig', cfg)
-              setNotice(t('saved'))
-            } catch (e) { setError(String(e?.message || e)) }
-          }
-
-          const copyBoard = async () => {
-            try { await navigator.clipboard.writeText(board); setNotice('Copied') } catch { /* ignore */ }
-          }
-
-          const toggleAsset = (p) => setSelected(s => s.includes(p) ? s.filter(x => x !== p) : [...s, p])
-
-          return h('div', { style: S.wrap },
-            h('div', { style: S.head },
-              h('h2', { style: S.title }, t('panel')),
-              h('p', { style: S.sub }, t('subtitle')),
-              h('p', { style: { ...S.sub, fontSize: 11, marginTop: 6 } }, t('prerequisites')),
-            ),
-            h('div', { style: S.tabs },
-              ['storyboard', 'video', 'settings'].map(k => h('button', {
-                key: k, style: S.tab(tab === k), onClick: () => setTab(k),
-              }, t(k === 'storyboard' ? 'tabStoryboard' : k === 'video' ? 'tabVideo' : 'tabSettings'))),
-            ),
-            h('div', { style: S.body },
-              error ? h('div', { style: S.errBox }, `${t('error')}: ${error}`) : null,
-              notice ? h('div', { style: { ...S.card, color: cssVars().ok, fontSize: 12 } }, notice) : null,
-
-              tab === 'storyboard' ? h(React.Fragment, null,
-                h('div', null,
-                  h('label', { style: S.label }, t('scriptLabel')),
-                  h('textarea', { style: { ...S.textarea, height: 130 }, value: script, placeholder: t('scriptPlaceholder'), onChange: e => setScript(e.target.value) }),
-                ),
-                h('div', null,
-                  h('label', { style: S.label }, t('presetLabel')),
-                  h('textarea', { style: { ...S.textarea, height: 170 }, value: preset, onChange: e => setPreset(e.target.value) }),
-                ),
-                h('div', { style: S.row },
-                  h('button', { style: S.btn(true), disabled: busy, onClick: doGenerate }, busy ? t('generating') : t('generate')),
-                  board ? h('button', { style: S.btn(false), onClick: copyBoard }, t('copy')) : null,
-                ),
-                board ? h('div', null,
-                  h('label', { style: S.label }, t('storyboardResult')),
-                  h('pre', { style: S.pre }, board),
-                ) : null,
-                h('div', { style: S.card },
-                  h('div', { style: { ...S.label, fontWeight: 600, color: cssVars().text } }, `${t('assets')} (${assets.length})`),
-                  h('div', { style: S.row },
-                    h('select', { style: { ...S.input, width: 'auto', flex: 1 }, value: workspaceId, onChange: e => setWorkspaceId(e.target.value) },
-                      (cfg?.workspaces || []).map(w => h('option', { key: w.id, value: w.id }, `${w.title} — ${w.path}`))),
-                    h('button', { style: S.btn(false), onClick: refreshAssets }, t('refreshAssets')),
-                  ),
-                  assets.length === 0 ? h('div', { style: S.sub }, t('noAssets')) :
-                    h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 } },
-                      assets.map(a => h('button', {
-                        key: a.path, style: S.chip(selected.includes(a.path)), onClick: () => toggleAsset(a.path),
-                        title: a.path,
-                      }, `${a.type === 'image' ? '🖼' : a.type === 'video' ? '🎬' : a.type === 'audio' ? '🔊' : '📄'} ${a.relative}`))),
-                ),
-              ) : null,
-
-              tab === 'video' ? h(React.Fragment, null,
-                h('div', { style: S.card },
-                  h('div', { style: { ...S.label, fontWeight: 600, color: cssVars().text } }, t('submit')),
-                  h('div', { style: { ...S.row, marginBottom: 8 } },
-                    h('select', { style: { ...S.input, width: 'auto' }, value: form.provider, onChange: e => setForm(f => ({ ...f, provider: e.target.value })) },
-                      h('option', { value: 'xiaoyunque' }, '小云雀 (xiaoyunque)'),
-                      h('option', { value: 'dreamina' }, 'Dreamina'),
-                    ),
-                    h('input', { style: { ...S.input, width: 80 }, value: form.ratio, onChange: e => setForm(f => ({ ...f, ratio: e.target.value })), 'aria-label': t('ratio') }),
-                    h('input', { style: { ...S.input, width: 90 }, type: 'number', min: 1, value: form.duration, onChange: e => setForm(f => ({ ...f, duration: e.target.value })), 'aria-label': t('duration') }),
-                  ),
-                  h('div', { style: { marginBottom: 8 } },
-                    h('label', { style: S.label }, t('model')),
-                    h('input', { style: S.input, value: form.model, onChange: e => setForm(f => ({ ...f, model: e.target.value })) }),
-                  ),
-                  h('div', { style: { marginBottom: 8 } },
-                    h('label', { style: S.label }, t('prompt')),
-                    h('textarea', { style: { ...S.textarea, height: 90 }, value: form.prompt || board, onChange: e => setForm(f => ({ ...f, prompt: e.target.value })) }),
-                  ),
-                  h('div', { style: { marginBottom: 8 } },
-                    h('label', { style: S.label }, t('downloadTarget')),
-                    h('input', { style: S.input, placeholder: t('defaultDownload'), value: form.targetDir, onChange: e => setForm(f => ({ ...f, targetDir: e.target.value })) }),
-                  ),
-                  h('div', { style: S.row },
-                    h('button', { style: S.btn(true), disabled: busy, onClick: doSubmit }, t('submit')),
-                  ),
-                  h('div', { style: { marginTop: 8 } },
-                    h('div', { style: { ...S.label, fontWeight: 600, color: cssVars().text } }, `${t('extraAssets')} (${selected.length})`),
-                    selected.length === 0
-                      ? h('div', { style: S.sub }, t('selectAssets') + ' — ' + t('tabStoryboard'))
-                      : h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 6 } }, selected.map(p =>
-                          h('button', {
-                            key: p,
-                            style: { ...S.chip(true), fontSize: 11 },
-                            title: '移除: ' + p,
-                            onClick: () => toggleAsset(p),
-                          }, '× ' + p.split(/[\\/]/).pop()),
-                        )),
-                  ),
-                ),
-                h('div', null,
-                  h('div', { style: { ...S.label, fontWeight: 600, color: cssVars().text, marginBottom: 8 } }, t('jobs')),
-                  jobs.length === 0 ? h('div', { style: S.sub }, t('none')) : jobs.map(j => h('div', { key: j.id, style: { ...S.card, marginBottom: 8 } },
-                    h('div', { style: S.row },
-                      h('span', { style: S.badge(j.status) }, j.status),
-                      h('span', { style: { fontSize: 11, color: cssVars().sub } }, `${j.provider} · ${new Date(j.createdAt).toLocaleString()}`),
-                    ),
-                    h('div', { style: { fontSize: 12, margin: '6px 0', color: cssVars().sub } }, String(j.prompt || '').slice(0, 120)),
-                    h('div', { style: S.row },
-                      (j.status === 'succeeded' || j.status === 'completed') ? h('button', { style: S.btn(false), onClick: () => doDownload(j) }, t('download')) : null,
-                      (j.status === 'running') ? h('button', { style: S.btn(false), onClick: async () => { await call('cancelJob', j.id); await refreshJobs() } }, t('cancel')) : null,
-                      j.error ? h('span', { style: { color: cssVars().err, fontSize: 11 } }, j.error.slice(0, 160)) : null,
-                    ),
-                  )),
-                ),
-              ) : null,
-
-              tab === 'settings' && cfg ? h(React.Fragment, null,
-                [['geminiProvider', t('geminiProvider')], ['geminiModel', t('geminiModel')], ['geminiApiKeyRef', t('apiKeyRef')], ['xiaoyunqueCommand', t('xiaoyunque')], ['dreaminaCommand', t('dreamina')], ['downloadFolder', t('downloadFolder')]].map(([k, label]) =>
-                  h('div', { key: k }, h('label', { style: S.label }, label), h('input', { style: S.input, value: cfg[k] ?? '', onChange: e => setCfg(c => ({ ...c, [k]: e.target.value })) })),
-                ),
-                h('div', null, h('label', { style: S.label }, t('presetRules')), h('textarea', { style: { ...S.textarea, height: 220 }, value: cfg.storyboardPreset || '', onChange: e => setCfg(c => ({ ...c, storyboardPreset: e.target.value })) })),
-                h('div', { style: S.row }, h('button', { style: S.btn(true), onClick: doSave }, t('save'))),
-              ) : null,
+        ctx.slots.inject('sidebar.panellist', () => {
+          const offRow = ctx.slots.register(
+            {
+              name: 'sidebar.panellist',
+              id: PANEL_ID,
+              order: 4,
+              label: () => t('panel.title'),
+              locale: NS,
+              inject: () => ({ t }),
+            },
+            (owner) => h(Icon, { size: owner && owner.size ? owner.size : 16, active: Boolean(owner && owner.active) }),
+          )
+          const offPanel = ctx.slots.register(
+            {
+              name: 'main',
+              key: PANEL_ID,
+              locale: NS,
+              inject: () => ({ t }),
+            },
+            (owner) => h(
+              ViewBoundary,
+              { key: PANEL_ID },
+              h(Page, { t: owner && owner.t ? owner.t : t }),
             ),
           )
-        }
-
-        const icon = ({ size }) => h('svg', { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: cssVars().brand, strokeWidth: 1.8, 'aria-hidden': true },
-          h('rect', { x: 3, y: 4, width: 18, height: 13, rx: 2 }),
-          h('path', { d: 'M3 9h18M8 21h8M12 17v4' }),
-          h('path', { d: 'M10 6.5l4 2.5-4 2.5z', fill: cssVars().brand, stroke: 'none' }),
-        )
-
-        const PANEL = 'dsh-short-drama'
-        return ctx.effect(() => {
-          ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: PANEL }, Panel))
-          ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
-            name: 'sidebar.panellist', id: PANEL, order: 40, label: () => t('panel'),
-          }, icon))
-          return async () => { await unmount() }
-        }, 'dsh-short-drama: ui')
+          return () => {
+            if (typeof offRow === 'function') offRow()
+            if (typeof offPanel === 'function') offPanel()
+          }
+        })
       },
     }
   },

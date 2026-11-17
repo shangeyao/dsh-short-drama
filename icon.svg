@@ -1,6 +1,14 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 36 36">
-  <rect x="6" y="9" width="24" height="18" rx="3" fill="none" stroke="#5b8def" stroke-width="2"/>
-  <path d="M6 14h24" stroke="#5b8def" stroke-width="2"/>
-  <path d="M11 9l4 5M19 9l4 5M27 9l3 4" stroke="#5b8def" stroke-width="2"/>
-  <path d="M15 17.5l7 3.5-7 3.5z" fill="#5b8def"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="dsh-short-drama-clap" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2563eb"/>
+      <stop offset="1" stop-color="#7c3aed"/>
+    </linearGradient>
+  </defs>
+  <rect x="6" y="14" width="52" height="40" rx="9" fill="url(#dsh-short-drama-clap)"/>
+  <rect x="6" y="22" width="52" height="5" fill="#ffffff" fill-opacity="0.38"/>
+  <path d="M14 14l6 8M26 14l6 8M38 14l6 8M50 14l5 7" stroke="#ffffff" stroke-opacity="0.55" stroke-width="3" stroke-linecap="round"/>
+  <path d="M27 34v12l10-6z" fill="#ffffff"/>
+  <circle cx="49" cy="46" r="6.5" fill="#ffffff"/>
+  <path d="M49 42.6l1.05 2.35 2.35 1.05-2.35 1.05L49 49.4l-1.05-2.35L45.6 46l2.35-1.05z" fill="#7c3aed"/>
 </svg>
