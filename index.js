@@ -22,7 +22,7 @@ import { copyFile, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/pro
 import { homedir } from 'node:os'
 import path from 'node:path'
 
-const VERSION = '1.6.0'
+const VERSION = '1.7.0'
 
 /** Prefix route owned by the configuration panel. */
 const ROUTE_PREFIX = '/short-drama/api'
@@ -475,6 +475,49 @@ async function scanAssets(root, exts, limit = 800) {
 
   await walk(root, 0)
   return { assets: found, truncated: found.length >= limit }
+}
+
+/**
+ * Dreamina flagship "全能参考" (multimodal2video) input limits, from the
+ * official CLI validator. Seedance 2.5 allows far more references than the
+ * 2.0 family, and only 2.5 accepts audio-only input.
+ */
+function multimodalLimits(modelVersion) {
+  const is25 = /seedance\s*2\.5/iu.test(String(modelVersion || ''))
+  return is25
+    ? { images: 30, videos: 10, audios: 10, total: 50, requireVisual: false }
+    : { images: 9, videos: 3, audios: 3, total: 12, requireVisual: true }
+}
+
+/**
+ * Classify resolved asset paths by extension into the repeatable flags of
+ * multimodal2video, enforcing per-type and total caps. `excludeDirs` keeps
+ * generated output folders from feeding finished videos back in as refs.
+ */
+function collectMultimodalAssets(paths, limits, excludeDirs = []) {
+  const grouped = { images: [], videos: [], audios: [] }
+  const seen = new Set()
+  for (const candidate of paths) {
+    const file = String(candidate || '').trim()
+    if (!file || seen.has(file)) continue
+    if (excludeDirs.some((dir) => dir && (file === dir || file.startsWith(`${dir}${path.sep}`)))) continue
+    seen.add(file)
+    const ext = path.extname(file).toLowerCase()
+    if (IMAGE_EXT.has(ext)) grouped.images.push(file)
+    else if (VIDEO_EXT.has(ext)) grouped.videos.push(file)
+    else if (AUDIO_EXT.has(ext)) grouped.audios.push(file)
+  }
+  const out = { images: [], videos: [], audios: [] }
+  let total = 0
+  // Visuals first (required by the 2.0 family), then audio.
+  for (const key of ['images', 'videos', 'audios']) {
+    for (const file of grouped[key]) {
+      if (out[key].length >= limits[key] || total >= limits.total) break
+      out[key].push(file)
+      total += 1
+    }
+  }
+  return out
 }
 
 /* ------------------------------------------------------------------ task run */
@@ -1033,11 +1076,13 @@ export function apply(ctx, config = {}) {
   }
 
   /**
-   * Dreamina (即梦) real flow:
-   *   submit:  dreamina text2video --prompt X --model_version M --ratio R
-   *              --video_resolution RES --duration N --poll=0   (or image2video with --image)
-   *   poll:    dreamina query_result --submit_id=ID
-   *   download: dreamina query_result --submit_id=ID --download_dir=DIR  (or URL download)
+   * Dreamina (即梦) uses its flagship "全能参考" mode: multimodal2video.
+   * It auto-attaches workspace materials as repeatable --image/--video/--audio
+   * references (limts depend on the model version), and falls back to
+   * text2video only when no usable material was found.
+   *   submit: dreamina multimodal2video --image P ... --video P ... --audio P ...
+   *             --prompt X --model_version M --video_resolution RES --duration N --poll=0
+   *   poll:   dreamina query_result --submit_id=ID --download_dir=DIR
    */
   async function runDreamina(item, controller, deadline) {
     const command = await cliPathFor('dreamina')
@@ -1045,25 +1090,47 @@ export function apply(ctx, config = {}) {
     const ratio = item.ratio
     const resolution = settings.dreaminaResolution || '720p'
 
-    let submitArgs = [
-      'text2video',
-      '--prompt', item.prompt,
-      '--model_version', modelVersion,
-      '--ratio', ratio,
-      '--video_resolution', resolution,
-      '--duration', String(item.seconds),
-      '--poll=0',
-    ]
-    // An image reference switches to image2video, which uses --image (singular)
-    // and has no --ratio flag.
-    if (item.assets.length > 0) {
-      submitArgs = [
-        'image2video',
-        '--image', item.assets[0],
+    // Auto-scan the current workspace for materials. Explicit assets (if any)
+    // are merged in first; generated video/output folders are excluded so a
+    // previous result never becomes a reference for the next shot.
+    let materials = [...(item.assets || [])]
+    try {
+      const scanned = await scanAssets(item.cwd, settings.assetExtensions)
+      materials.push(...scanned.assets.map((asset) => asset.path))
+    } catch {
+      /* scanning is best-effort */
+    }
+    const limits = multimodalLimits(modelVersion)
+    const refs = collectMultimodalAssets(materials, limits, [item.outDir])
+    const hasVisual = refs.images.length > 0 || refs.videos.length > 0
+
+    let submitArgs
+    if (hasVisual || (!limits.requireVisual && refs.audios.length > 0)) {
+      // 全能参考 / flagship multimodal mode.
+      submitArgs = ['multimodal2video']
+      for (const image of refs.images) submitArgs.push('--image', image)
+      for (const video of refs.videos) submitArgs.push('--video', video)
+      for (const audio of refs.audios) submitArgs.push('--audio', audio)
+      submitArgs.push(
         '--prompt', item.prompt,
+        '--model_version', modelVersion,
         '--video_resolution', resolution,
         '--duration', String(item.seconds),
+        '--poll=0',
+      )
+      store.update(item.id, {
+        stage: '全能参考：已带素材…',
+        attached: { images: refs.images.length, videos: refs.videos.length, audios: refs.audios.length },
+      })
+    } else {
+      // No usable material: plain text-to-video.
+      submitArgs = [
+        'text2video',
+        '--prompt', item.prompt,
         '--model_version', modelVersion,
+        '--ratio', ratio,
+        '--video_resolution', resolution,
+        '--duration', String(item.seconds),
         '--poll=0',
       ]
     }
@@ -1521,7 +1588,8 @@ export function apply(ctx, config = {}) {
       '用小云雀（Pippit / pippit-tool-cli）或即梦（dreamina CLI）的官方 CLI 提交视频生成任务，'
       + '返回任务 id 后可用 video_status 轮询。工具会按 CLI 的真实语法提交并自动查询、下载成片。'
       + '传 number 时按序号读取 storyboard_write 生成的分镜词作为提示词，成片也带同一序号，'
-      + '与分镜一一对应；也可直接传 prompt。任务在宿主后台运行，输出目录与素材路径都相对于当前会话工作区。',
+      + '与分镜一一对应；也可直接传 prompt。即梦会自动扫描当前工作区素材，按类型带入全能参考模式（multimodal2video），'
+      + '数量按模型版本自动限；小云雀照常。任务在宿主后台运行，输出目录与素材路径都相对于当前会话工作区。',
     parameters: {
       prompt: { type: 'string', description: '提示词或分镜词文本；与 number 二选一。' },
       number: { type: 'integer', description: '分镜序号（从 1 开始）；提供后自动读取对应分镜文件作为提示词，无需再传 prompt。' },
@@ -1622,7 +1690,7 @@ export function apply(ctx, config = {}) {
             items: {
               type: 'object',
               additionalProperties: false,
-              required: ['id', 'status', 'provider', 'stage', 'error', 'resultName', 'outDir', 'prompt', 'number'],
+              required: ['id', 'status', 'provider', 'stage', 'error', 'resultName', 'outDir', 'prompt', 'number', 'attached'],
               properties: {
                 id: { type: 'string' },
                 status: { type: 'string' },
@@ -1633,6 +1701,16 @@ export function apply(ctx, config = {}) {
                 outDir: { type: 'string' },
                 prompt: { type: 'string' },
                 number: { type: 'integer' },
+                attached: {
+                  type: 'object',
+                  additionalProperties: false,
+                  required: ['images', 'videos', 'audios'],
+                  properties: {
+                    images: { type: 'integer' },
+                    videos: { type: 'integer' },
+                    audios: { type: 'integer' },
+                  },
+                },
               },
             },
           },
@@ -1642,6 +1720,9 @@ export function apply(ctx, config = {}) {
         if (value.items.length === 0) return TEXT('还没有视频任务。')
         return TEXT(value.items.map((item) => {
           const bits = [item.number ? `#${item.number}` : item.id, item.status, item.provider]
+          if (item.attached && (item.attached.images || item.attached.videos || item.attached.audios)) {
+            bits.push(`素材 图${item.attached.images || 0}/视${item.attached.videos || 0}/音${item.attached.audios || 0}`)
+          }
           if (item.stage) bits.push(item.stage)
           if (item.resultName) bits.push(item.resultName)
           if (item.error) bits.push(`错误：${item.error}`)
@@ -1667,6 +1748,7 @@ export function apply(ctx, config = {}) {
           outDir: item.outDir || '',
           prompt: item.prompt || '',
           number: item.number || 0,
+          attached: item.attached || { images: 0, videos: 0, audios: 0 },
         })),
       }
     },

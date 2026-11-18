@@ -135,6 +135,31 @@ dsh plugin add github:shangeyao/dsh-short-drama
 
 更新完插件自动重新探测、刷新模型列表。改完 CLI 或重装后也可以点顶部的「重新检测」。
 
+### 即梦走「全能参考」模式，素材自动带入
+
+即梦出片默认用它的旗舰**全能参考**模式（`dreamina multimodal2video`，旧名 ref2video），而不是纯文生视频。提交时插件会**自动扫描当前工作区**的素材，按扩展名分门别类带进去：
+
+- 图片（png/jpg/jpeg/webp/gif）→ 可重复的 `--image`
+- 视频（mp4/mov/webm/mkv/avi）→ 可重复的 `--video`
+- 音频（mp3/wav/m4a/aac/flac）→ 可重复的 `--audio`
+
+数量按模型版本自动限（来自官方校验器，避免超限报错）：
+
+| 模型 | 图片 | 视频 | 音频 | 合计 |
+|---|---|---|---|---|
+| seedance2.5 | 30 | 10 | 10 | 50（可纯音频） |
+| seedance2.0 系列 | 9 | 3 | 3 | 12（至少一张图或一个视频） |
+
+已生成的输出目录会被排除，成片不会回流成下一次的参考素材。提交命令形如：
+
+```bash
+dreamina multimodal2video --image a.png --image b.png --audio voice.mp3 \
+  --prompt "..." --model_version seedance2.0mini --video_resolution 720p \
+  --duration 5 --poll=0
+```
+
+没有可用素材时才退回 `text2video`。每次任务在 `video_status` 里会显示带了多少素材（图/视/音）。小云雀的提交方式不变。
+
 ### 小云雀（Pippit，`pippit-tool-cli`）
 
 ```bash
