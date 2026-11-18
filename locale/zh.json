@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "短剧工坊",
-    "description": "左侧栏只做配置：分镜词规则、下载目录；Gemini 连接全自动（自动探测已存 Key、从 API 拉模型列表、可粘贴一次存入凭据库），小云雀(pippit-tool-cli)/即梦(dreamina) CLI 自动探测路径、自动读取模型列表、检测登录状态并可在面板内一键更新。长剧本由 storyboard_write 按规则拆成有序分镜词，按序号写成 NNN.md 到可配置的分镜文件夹；video_submit 用 number 与分镜一一对应地出片并同号命名。两家出片都会自动扫描工作区素材按类型带入 --image/--video/--audio：即梦走旗舰全能参考模式(multimodal2video，数量按模型自动限)，小云雀走 generate-video(保守限量)。操作工具还有 storyboard_list / short_drama_assets / video_status / video_download / video_cancel，全部以当前工作区为根执行。"
+    "description": "左侧栏只做配置：分镜词规则、下载目录；Gemini 连接全自动（自动探测已存 Key、从 API 拉模型列表、可粘贴一次存入凭据库），小云雀(pippit-tool-cli)/即梦(dreamina) CLI 自动探测路径、自动读取模型列表、检测登录状态并可在面板内一键更新。长剧本由 storyboard_write 按规则拆成有序分镜词，按序号写成 NNN.md 到可配置的分镜文件夹；video_submit 用 number 与分镜一一对应地出片并同号命名。两家出片都只带入分镜词点名的素材：扫描工作区，仅当素材文件名或相对路径出现在分镜词里才按类型传入 --image/--video/--audio，没点名的一个都不传，无人为限量。即梦走旗舰全能参考模式(multimodal2video)，小云雀走 generate-video。操作工具还有 storyboard_list / short_drama_assets / video_status / video_download / video_cancel，全部以当前工作区为根执行。"
   }
 }

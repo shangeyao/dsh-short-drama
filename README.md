@@ -135,34 +135,26 @@ dsh plugin add github:shangeyao/dsh-short-drama
 
 更新完插件自动重新探测、刷新模型列表。改完 CLI 或重装后也可以点顶部的「重新检测」。
 
-### 即梦走「全能参考」模式，素材自动带入
+### 素材：只带分镜词点名的，不多点名一个都不带
 
-即梦出片默认用它的旗舰**全能参考**模式（`dreamina multimodal2video`，旧名 ref2video），而不是纯文生视频。提交时插件会**自动扫描当前工作区**的素材，按扩展名分门别类带进去：
+两家出片都不再"把工作区所有素材塞进去"，也不再做人为数量限制。规则只有一条：
 
-- 图片（png/jpg/jpeg/webp/gif）→ 可重复的 `--image`
-- 视频（mp4/mov/webm/mkv/avi）→ 可重复的 `--video`
-- 音频（mp3/wav/m4a/aac/flac）→ 可重复的 `--audio`
+> 插件扫描当前工作区素材，**仅当素材的文件名（含/不含扩展名）或相对路径出现在分镜词/提示词里**，才按类型带进去；没点名的素材一个都不传。
 
-数量按模型版本自动限（来自官方校验器，避免超限报错）：
+例如分镜词写"小雨出场，背景放 bgm.mp3，参考 cat.png 的画风"，就只带 `小雨.jpg`、`bgm.mp3`、`cat.png`；工作区里其它没被提到的图/音/视频不会混入。通过 `assets` 参数显式指定的素材则无条件带入。
 
-| 模型 | 图片 | 视频 | 音频 | 合计 |
-|---|---|---|---|---|
-| seedance2.5 | 30 | 10 | 10 | 50（可纯音频） |
-| seedance2.0 系列 | 9 | 3 | 3 | 12（至少一张图或一个视频） |
+- 即梦 → 旗舰**全能参考**模式 `dreamina multimodal2video`，命中的素材进可重复的 `--image` / `--video` / `--audio`
+- 小云雀 → `generate-video` 的可重复 `--image` / `--video` / `--audio`
 
-已生成的输出目录会被排除，成片不会回流成下一次的参考素材。提交命令形如：
+已生成的输出目录始终被排除，成片不会回流成下一次的参考素材。分镜词一个素材都没提到时，即梦退回 `text2video`，小云雀纯提示词提交。每次任务在 `video_status` 里会显示这次实际带了哪些素材（图/视/音数量）。
+
+提交命令形如（即梦）：
 
 ```bash
-dreamina multimodal2video --image a.png --image b.png --audio voice.mp3 \
+dreamina multimodal2video --image 小雨.jpg --image cat.png --audio bgm.mp3 \
   --prompt "..." --model_version seedance2.0mini --video_resolution 720p \
   --duration 5 --poll=0
 ```
-
-没有可用素材时才退回 `text2video`。每次任务在 `video_status` 里会显示带了多少素材（图/视/音）。
-
-### 小云雀也自动带素材
-
-小云雀同样会**自动扫描当前工作区**素材，按扩展名带入 `generate-video` 的可重复 `--image` / `--video` / `--audio`。官方 CLI 没有明确的素材数量上限，插件采用保守策略（图 ≤9、视 ≤3、音 ≤3、合计 ≤12），避免服务端超载。输出目录同样被排除，已生成成片不会回流成参考素材。已生成的 `video_status` 计数字段对小云雀任务一样有效。
 
 ### 小云雀（Pippit，`pippit-tool-cli`）
 

@@ -22,7 +22,7 @@ import { copyFile, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/pro
 import { homedir } from 'node:os'
 import path from 'node:path'
 
-const VERSION = '1.8.0'
+const VERSION = '1.9.0'
 
 /** Prefix route owned by the configuration panel. */
 const ROUTE_PREFIX = '/short-drama/api'
@@ -478,44 +478,51 @@ async function scanAssets(root, exts, limit = 800) {
 }
 
 /**
- * Dreamina flagship "全能参考" (multimodal2video) input limits, from the
- * official CLI validator. Seedance 2.5 allows far more references than the
- * 2.0 family, and only 2.5 accepts audio-only input.
+ * Pick ONLY the workspace materials that the storyboard/prompt actually names,
+ * then classify them by extension into the repeatable --image/--video/--audio
+ * groups. No artificial count caps — both CLIs decide their own limits.
+ *
+ * Matching rule: a scanned asset is selected when the prompt text contains its
+ * file name (with or without extension) or its workspace-relative path. This
+ * lets a storyboard say "参考 cat.png" / "配音 bgm.mp3" / "人像 小雨.jpg" and
+ * have exactly those files attached; unrelated files are never pulled in.
+ * `explicit` paths (user passed via assets) are always included regardless of
+ * text. Generated output dirs are always excluded.
  */
-function multimodalLimits(modelVersion) {
-  const is25 = /seedance\s*2\.5/iu.test(String(modelVersion || ''))
-  return is25
-    ? { images: 30, videos: 10, audios: 10, total: 50, requireVisual: false }
-    : { images: 9, videos: 3, audios: 3, total: 12, requireVisual: true }
-}
+function matchAssetsToPrompt(prompt, scanned, explicit = [], excludeDirs = []) {
+  const text = String(prompt || '')
+  const candidates = []
 
-/**
- * Classify resolved asset paths by extension into the repeatable flags of
- * multimodal2video, enforcing per-type and total caps. `excludeDirs` keeps
- * generated output folders from feeding finished videos back in as refs.
- */
-function collectMultimodalAssets(paths, limits, excludeDirs = []) {
-  const grouped = { images: [], videos: [], audios: [] }
-  const seen = new Set()
-  for (const candidate of paths) {
-    const file = String(candidate || '').trim()
-    if (!file || seen.has(file)) continue
-    if (excludeDirs.some((dir) => dir && (file === dir || file.startsWith(`${dir}${path.sep}`)))) continue
-    seen.add(file)
-    const ext = path.extname(file).toLowerCase()
-    if (IMAGE_EXT.has(ext)) grouped.images.push(file)
-    else if (VIDEO_EXT.has(ext)) grouped.videos.push(file)
-    else if (AUDIO_EXT.has(ext)) grouped.audios.push(file)
+  // Explicit assets always win.
+  for (const file of explicit) {
+    if (file) candidates.push({ file: String(file), explicit: true })
   }
-  const out = { images: [], videos: [], audios: [] }
-  let total = 0
-  // Visuals first (required by the 2.0 family), then audio.
-  for (const key of ['images', 'videos', 'audios']) {
-    for (const file of grouped[key]) {
-      if (out[key].length >= limits[key] || total >= limits.total) break
-      out[key].push(file)
-      total += 1
+
+  // Scanned assets only when named in the prompt/storyboard.
+  const lowerText = text.toLowerCase()
+  for (const asset of scanned) {
+    const file = String(asset.path || '')
+    if (!file) continue
+    const base = path.basename(file)
+    const stem = path.basename(file, path.extname(file))
+    const rel = String(asset.relative || path.basename(file)).split(path.sep).join('/')
+    const names = [base, stem, rel, rel.replace(/\.[^.]+$/u, '')].filter(Boolean)
+    if (names.some((name) => name.length >= 2 && lowerText.includes(name.toLowerCase()))) {
+      candidates.push({ file, explicit: false })
     }
+  }
+
+  const out = { images: [], videos: [], audios: [] }
+  const seen = new Set()
+  for (const { file } of candidates) {
+    const resolved = path.resolve(file)
+    if (seen.has(resolved)) continue
+    if (excludeDirs.some((dir) => dir && (resolved === path.resolve(dir) || resolved.startsWith(`${path.resolve(dir)}${path.sep}`)))) continue
+    seen.add(resolved)
+    const ext = path.extname(file).toLowerCase()
+    if (IMAGE_EXT.has(ext)) out.images.push(file)
+    else if (VIDEO_EXT.has(ext)) out.videos.push(file)
+    else if (AUDIO_EXT.has(ext)) out.audios.push(file)
   }
   return out
 }
@@ -1077,9 +1084,9 @@ export function apply(ctx, config = {}) {
 
   /**
    * Dreamina (即梦) uses its flagship "全能参考" mode: multimodal2video.
-   * It auto-attaches workspace materials as repeatable --image/--video/--audio
-   * references (limts depend on the model version), and falls back to
-   * text2video only when no usable material was found.
+   * It attaches ONLY the workspace materials named in the storyboard text as
+   * repeatable --image/--video/--audio references, with no artificial count
+   * limit, and falls back to text2video when no material is named.
    *   submit: dreamina multimodal2video --image P ... --video P ... --audio P ...
    *             --prompt X --model_version M --video_resolution RES --duration N --poll=0
    *   poll:   dreamina query_result --submit_id=ID --download_dir=DIR
@@ -1090,22 +1097,20 @@ export function apply(ctx, config = {}) {
     const ratio = item.ratio
     const resolution = settings.dreaminaResolution || '720p'
 
-    // Auto-scan the current workspace for materials. Explicit assets (if any)
-    // are merged in first; generated video/output folders are excluded so a
-    // previous result never becomes a reference for the next shot.
-    let materials = [...(item.assets || [])]
+    // Only attach materials that the storyboard actually names. Scan the
+    // workspace, then keep files whose name/relative path appears in the prompt;
+    // explicit assets are always included. No artificial count limits.
+    let scanned = []
     try {
-      const scanned = await scanAssets(item.cwd, settings.assetExtensions)
-      materials.push(...scanned.assets.map((asset) => asset.path))
+      scanned = (await scanAssets(item.cwd, settings.assetExtensions)).assets
     } catch {
       /* scanning is best-effort */
     }
-    const limits = multimodalLimits(modelVersion)
-    const refs = collectMultimodalAssets(materials, limits, [item.outDir])
-    const hasVisual = refs.images.length > 0 || refs.videos.length > 0
+    const refs = matchAssetsToPrompt(item.prompt, scanned, item.assets || [], [item.outDir])
+    const hasAny = refs.images.length > 0 || refs.videos.length > 0 || refs.audios.length > 0
 
     let submitArgs
-    if (hasVisual || (!limits.requireVisual && refs.audios.length > 0)) {
+    if (hasAny) {
       // 全能参考 / flagship multimodal mode.
       submitArgs = ['multimodal2video']
       for (const image of refs.images) submitArgs.push('--image', image)
@@ -1206,21 +1211,16 @@ export function apply(ctx, config = {}) {
       return
     }
 
-    // Auto-scan the current workspace for materials, just like Dreamina.
-    // Pippit's CLI has no documented count cap, so use a conservative policy
-    // (same as the Dreamina 2.0 family) to avoid overloading the service.
-    // Explicit assets are merged first; generated output dirs are excluded so
-    // a finished video never becomes a reference for the next shot.
-    let materials = [...(item.assets || [])]
+    // Only attach materials named in the storyboard, same as Dreamina.
+    // Scan workspace, keep files whose name/relative path appears in the
+    // prompt; explicit assets always included. No artificial count limits.
+    let scanned = []
     try {
-      const scanned = await scanAssets(item.cwd, settings.assetExtensions)
-      materials.push(...scanned.assets.map((asset) => asset.path))
+      scanned = (await scanAssets(item.cwd, settings.assetExtensions)).assets
     } catch {
       /* scanning is best-effort */
     }
-    const refs = collectMultimodalAssets(materials, {
-      images: 9, videos: 3, audios: 3, total: 12,
-    }, [item.outDir])
+    const refs = matchAssetsToPrompt(item.prompt, scanned, item.assets || [], [item.outDir])
 
     const submitArgs = [
       'generate-video',
@@ -1603,9 +1603,9 @@ export function apply(ctx, config = {}) {
       '用小云雀（Pippit / pippit-tool-cli）或即梦（dreamina CLI）的官方 CLI 提交视频生成任务，'
       + '返回任务 id 后可用 video_status 轮询。工具会按 CLI 的真实语法提交并自动查询、下载成片。'
       + '传 number 时按序号读取 storyboard_write 生成的分镜词作为提示词，成片也带同一序号，'
-      + '与分镜一一对应；也可直接传 prompt。两家都会自动扫描当前工作区素材并按类型带入：'
-      + '即梦走全能参考模式（multimodal2video，数量按模型自动限），小云雀走 generate-video 的可重复 --image/--video/--audio（保守限量）。'
-      + '任务在宿主后台运行，输出目录与素材路径都相对于当前会话工作区。',
+      + '与分镜一一对应；也可直接传 prompt。两家都只带入"分镜词/提示词里点名的素材"：'
+      + '自动扫描工作区，仅当素材文件名或相对路径出现在分镜词里才按类型传入（--image/--video/--audio），没点名的一个都不传，也不做人为数量限制。'
+      + '即梦走全能参考模式（multimodal2video），小云雀走 generate-video。任务在宿主后台运行，路径都相对于当前会话工作区。',
     parameters: {
       prompt: { type: 'string', description: '提示词或分镜词文本；与 number 二选一。' },
       number: { type: 'integer', description: '分镜序号（从 1 开始）；提供后自动读取对应分镜文件作为提示词，无需再传 prompt。' },
