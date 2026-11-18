@@ -22,7 +22,7 @@ import { copyFile, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/pro
 import { homedir } from 'node:os'
 import path from 'node:path'
 
-const VERSION = '1.7.0'
+const VERSION = '1.8.0'
 
 /** Prefix route owned by the configuration panel. */
 const ROUTE_PREFIX = '/short-drama/api'
@@ -1206,6 +1206,22 @@ export function apply(ctx, config = {}) {
       return
     }
 
+    // Auto-scan the current workspace for materials, just like Dreamina.
+    // Pippit's CLI has no documented count cap, so use a conservative policy
+    // (same as the Dreamina 2.0 family) to avoid overloading the service.
+    // Explicit assets are merged first; generated output dirs are excluded so
+    // a finished video never becomes a reference for the next shot.
+    let materials = [...(item.assets || [])]
+    try {
+      const scanned = await scanAssets(item.cwd, settings.assetExtensions)
+      materials.push(...scanned.assets.map((asset) => asset.path))
+    } catch {
+      /* scanning is best-effort */
+    }
+    const refs = collectMultimodalAssets(materials, {
+      images: 9, videos: 3, audios: 3, total: 12,
+    }, [item.outDir])
+
     const submitArgs = [
       'generate-video',
       '--prompt', item.prompt,
@@ -1214,16 +1230,15 @@ export function apply(ctx, config = {}) {
       '--duration', String(item.seconds),
       '--resolution', resolution,
     ]
-    // Pippit supports repeatable --image / --video / --audio. Route workspace
-    // assets by their extension (portraits -> --image, voices -> --audio).
-    for (const asset of item.assets) {
-      const ext = path.extname(asset).toLowerCase()
-      if (IMAGE_EXT.has(ext)) submitArgs.push('--image', asset)
-      else if (AUDIO_EXT.has(ext)) submitArgs.push('--audio', asset)
-      else if (VIDEO_EXT.has(ext)) submitArgs.push('--video', asset)
-    }
+    // Pippit --image / --video / --audio are repeatable and take local paths.
+    for (const image of refs.images) submitArgs.push('--image', image)
+    for (const video of refs.videos) submitArgs.push('--video', video)
+    for (const audio of refs.audios) submitArgs.push('--audio', audio)
+    store.update(item.id, {
+      stage: refs.images.length || refs.videos.length || refs.audios.length ? '已带素材，提交中…' : '提交生成任务…',
+      attached: { images: refs.images.length, videos: refs.videos.length, audios: refs.audios.length },
+    })
 
-    store.update(item.id, { stage: '提交生成任务…' })
     const { outcome, tail } = await cliRun(item, command, submitArgs, controller, '生成中…')
     if (Date.now() > deadline) throw new Error('任务超时')
     if (controller.signal.aborted) return
@@ -1588,8 +1603,9 @@ export function apply(ctx, config = {}) {
       '用小云雀（Pippit / pippit-tool-cli）或即梦（dreamina CLI）的官方 CLI 提交视频生成任务，'
       + '返回任务 id 后可用 video_status 轮询。工具会按 CLI 的真实语法提交并自动查询、下载成片。'
       + '传 number 时按序号读取 storyboard_write 生成的分镜词作为提示词，成片也带同一序号，'
-      + '与分镜一一对应；也可直接传 prompt。即梦会自动扫描当前工作区素材，按类型带入全能参考模式（multimodal2video），'
-      + '数量按模型版本自动限；小云雀照常。任务在宿主后台运行，输出目录与素材路径都相对于当前会话工作区。',
+      + '与分镜一一对应；也可直接传 prompt。两家都会自动扫描当前工作区素材并按类型带入：'
+      + '即梦走全能参考模式（multimodal2video，数量按模型自动限），小云雀走 generate-video 的可重复 --image/--video/--audio（保守限量）。'
+      + '任务在宿主后台运行，输出目录与素材路径都相对于当前会话工作区。',
     parameters: {
       prompt: { type: 'string', description: '提示词或分镜词文本；与 number 二选一。' },
       number: { type: 'integer', description: '分镜序号（从 1 开始）；提供后自动读取对应分镜文件作为提示词，无需再传 prompt。' },

@@ -158,7 +158,11 @@ dreamina multimodal2video --image a.png --image b.png --audio voice.mp3 \
   --duration 5 --poll=0
 ```
 
-没有可用素材时才退回 `text2video`。每次任务在 `video_status` 里会显示带了多少素材（图/视/音）。小云雀的提交方式不变。
+没有可用素材时才退回 `text2video`。每次任务在 `video_status` 里会显示带了多少素材（图/视/音）。
+
+### 小云雀也自动带素材
+
+小云雀同样会**自动扫描当前工作区**素材，按扩展名带入 `generate-video` 的可重复 `--image` / `--video` / `--audio`。官方 CLI 没有明确的素材数量上限，插件采用保守策略（图 ≤9、视 ≤3、音 ≤3、合计 ≤12），避免服务端超载。输出目录同样被排除，已生成成片不会回流成参考素材。已生成的 `video_status` 计数字段对小云雀任务一样有效。
 
 ### 小云雀（Pippit，`pippit-tool-cli`）
 
